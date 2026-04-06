@@ -1,0 +1,21 @@
+# Build artifacts
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Local data
+/var/
+/.dnsdb/
+*.badger
+*.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
