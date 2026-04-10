@@ -122,9 +122,9 @@ func TestTreeGet(t *testing.T) {
 func TestTreeDecodeMalformed(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]byte{
-		"empty":         nil,
-		"bad version":   {99},
-		"bad count":     {1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		"empty":                  nil,
+		"bad version":            {99},
+		"bad count":              {1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 		"truncated entry header": {1, 1, 0}, // version=1, count=1, then nothing
 	}
 	for name, payload := range cases {

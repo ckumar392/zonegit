@@ -286,7 +286,64 @@ commit's tree, this is O(N) memory reads. Fast.
 
 ---
 
-## 11. Anti-goals (things we will NOT do, no matter how tempting)
+## 11. Deployment shapes — where dnsdb fits
+
+> dnsdb is **not** a DNS server. It is a **versioned state store** that
+> sits inside the control plane, replacing the mutable database that today
+> holds authoritative zone data.
+
+### Before vs After
+
+```
+BEFORE                                  AFTER
+──────                                  ─────
+[ UI / API ]                            [ UI / API ]
+      ↓                                       ↓
+[ Mutable DB ]                          [ dnsdb (Merkle DAG, commits) ]
+      ↓                                       ↓
+[ Zone files ]                          [ Zone snapshot (HEAD) ]
+      ↓                                       ↓
+[ DNS servers (BIND/CoreDNS) ]          [ DNS servers (BIND/CoreDNS) ]
+```
+
+### What gets replaced
+
+| Before (mutable)       | After (dnsdb)                        |
+|------------------------|--------------------------------------|
+| DB tables / rows       | Append-only commits (Blob/Tree/Commit) |
+| Periodic snapshots     | Commit history (full DAG)            |
+| Audit log tables       | Cryptographic history (signed commits v3+) |
+| Import / sync scripts  | Commit-based diffs + merge           |
+
+### What stays exactly the same
+
+- **DNS servers** — BIND, CoreDNS, NSD, whatever answers port 53.
+- **DNS wire protocol** — standard RFC 1035 / RFC 8484 queries.
+- **External APIs** — your existing control-plane REST / gRPC surface is unchanged.
+
+### Two shipped shapes
+
+1. **Standalone `dnsdbd`** (v0+) — a binary that opens a dnsdb repo and
+   serves DNS on port 53 directly. Useful for demos, dev, and small
+   deployments. Internally uses `pkg/resolve`.
+2. **CoreDNS plugin** (v6) — a thin shim (~200 LoC) wrapping
+   `pkg/resolve` as a CoreDNS plugin. Embeds into existing CoreDNS
+   deployments with a single `Corefile` directive.
+
+Neither shape changes the DNS protocol — they are wire-identical to any
+other authoritative server.
+
+### BIND plugin — explicitly not pursued
+
+BIND is C; writing a safe, maintained C plugin that bridges to a Go
+object store is fragile and unlikely to be accepted upstream. Instead,
+`dnsdbd` is a **drop-in replacement** for BIND — same port, same
+protocol, same zone transfer (AXFR/IXFR, v5+).
+
+
+---
+
+## 12. Anti-goals (things we will NOT do, no matter how tempting)
 
 - **No "convenience" methods that bypass the Storage interface.**
   If `pkg/repo` needs to do something with bytes, it goes through
