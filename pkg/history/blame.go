@@ -13,11 +13,11 @@ import (
 // an RRset and the value itself. "Introduced" = the commit whose parent
 // either lacks the RRset or has a different blob.
 type BlameInfo struct {
-	Commit  store.Hash    // commit hash that introduced the current value
+	Commit  store.Hash // commit hash that introduced the current value
 	Author  object.Identity
 	Message string
-	Blob    store.Hash    // current blob hash for (path, rrtype)
-	Found   bool          // false if the RRset doesn't exist at head
+	Blob    store.Hash // current blob hash for (path, rrtype)
+	Found   bool       // false if the RRset doesn't exist at head
 }
 
 // Blame walks the first-parent chain from head and returns the commit that

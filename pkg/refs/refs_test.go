@@ -169,16 +169,16 @@ func TestResolve(t *testing.T) {
 		refish string
 		want   store.Hash
 	}{
-		{c2.String(), c2},         // full hex
-		{"main", c2},              // branch name
-		{"v1", c0},                // tag name
-		{"HEAD", c2},              // HEAD
-		{"main~0", c2},            // ~0 = self
-		{"main~1", c1},            // parent
-		{"main~2", c0},            // grandparent
-		{"HEAD~1", c1},            // HEAD ancestor
-		{"refs/heads/main", c2},   // raw ref
-		{"refs/tags/v1", c0},      // raw tag ref
+		{c2.String(), c2},       // full hex
+		{"main", c2},            // branch name
+		{"v1", c0},              // tag name
+		{"HEAD", c2},            // HEAD
+		{"main~0", c2},          // ~0 = self
+		{"main~1", c1},          // parent
+		{"main~2", c0},          // grandparent
+		{"HEAD~1", c1},          // HEAD ancestor
+		{"refs/heads/main", c2}, // raw ref
+		{"refs/tags/v1", c0},    // raw tag ref
 	}
 	for _, tt := range tests {
 		t.Run(tt.refish, func(t *testing.T) {

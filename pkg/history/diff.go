@@ -34,8 +34,8 @@ func (op ChangeOp) String() string {
 
 // Change is one RRset-level change between two trees.
 type Change struct {
-	Path    []string   // labels from zone root down (e.g. ["api"] for api.<zone>)
-	RRType  string     // "A", "AAAA", "MX", ...
+	Path    []string // labels from zone root down (e.g. ["api"] for api.<zone>)
+	RRType  string   // "A", "AAAA", "MX", ...
 	Op      ChangeOp
 	OldBlob store.Hash // ZeroHash for OpAdded
 	NewBlob store.Hash // ZeroHash for OpRemoved
