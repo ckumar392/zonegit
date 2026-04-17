@@ -1,3 +1,4 @@
-// Package history walks the commit DAG to produce log, diff, and blame
-// outputs. It is read-only — it never mutates any object or ref.
+// Package history provides read-only views over the commit DAG:
+// log (commits in parent order), diff (RRset changes between trees),
+// blame (who last touched a specific RRset), and walk-at (point-in-time).
 package history

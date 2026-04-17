@@ -113,8 +113,8 @@ func TestEncodeRejectsEmpty(t *testing.T) {
 
 func TestDecodeMalformed(t *testing.T) {
 	cases := [][]byte{
-		{}, // empty
-		{99}, // bad version
+		{},     // empty
+		{99},   // bad version
 		{1, 0}, // owner unpack will fail (just root + nothing)
 	}
 	for i, p := range cases {
