@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -119,12 +120,12 @@ func diffWalk(ctx context.Context, s store.Storage, path []string, oldH, newH st
 
 		switch take {
 		case 1: // present only in old
-			if err := emitOnlySide(ctx, s, append(path[:len(path):len(path)]), oa[i], OpRemoved, out); err != nil {
+			if err := emitOnlySide(ctx, s, slices.Clone(path), oa[i], OpRemoved, out); err != nil {
 				return err
 			}
 			i++
 		case 2: // present only in new
-			if err := emitOnlySide(ctx, s, append(path[:len(path):len(path)]), na[j], OpAdded, out); err != nil {
+			if err := emitOnlySide(ctx, s, slices.Clone(path), na[j], OpAdded, out); err != nil {
 				return err
 			}
 			j++
@@ -132,7 +133,7 @@ func diffWalk(ctx context.Context, s store.Storage, path []string, oldH, newH st
 			if oa[i].Hash != na[j].Hash {
 				if oa[i].Kind == object.EntryLeaf {
 					*out = append(*out, Change{
-						Path:    append(path[:len(path):len(path)]),
+						Path:    slices.Clone(path),
 						RRType:  oa[i].Name,
 						Op:      OpModified,
 						OldBlob: oa[i].Hash,

@@ -1,4 +1,7 @@
-// Package repo is the public Go API of dnsdb. It composes the lower-level
-// packages (store/object/zone/refs/history/resolve) into the operations
-// the CLI and server consume: Init, Add, Commit, Log, Diff, Blame, etc.
+// Package repo is the public Go API of dnsdb. It composes pkg/store,
+// pkg/object, pkg/zone, pkg/refs, and pkg/history into a single Repo
+// type with high-level operations that the CLI and server consume.
+//
+// Anything embedding dnsdb should depend on
+// this package, never on the layers below.
 package repo

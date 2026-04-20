@@ -19,3 +19,6 @@ coverage.*
 # OS
 .DS_Store
 Thumbs.db
+
+# Vendored dependencies (use go mod download instead)
+/vendor/
