@@ -57,6 +57,11 @@ type Options struct {
 	Path string
 	// Memory uses an in-memory store. Used only if Storage and Path are both empty.
 	Memory bool
+	// ReadOnly opens the underlying Badger store without acquiring the
+	// directory lock, allowing multiple readers (and one concurrent writer)
+	// to coexist. Only meaningful with Path. Mutating calls (Set/Delete/
+	// Commit/Init) will fail with an error from BadgerDB.
+	ReadOnly bool
 }
 
 // Open opens an existing repo or creates one if not present (when using a
@@ -67,7 +72,15 @@ func Open(opts Options) (*Repo, error) {
 	case opts.Storage != nil:
 		s = opts.Storage
 	case opts.Path != "":
-		bs, err := badger.Open(opts.Path)
+		var (
+			bs  *badger.Store
+			err error
+		)
+		if opts.ReadOnly {
+			bs, err = badger.OpenReadOnly(opts.Path)
+		} else {
+			bs, err = badger.Open(opts.Path)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -40,6 +40,22 @@ func Open(dir string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// OpenReadOnly opens an existing BadgerDB at dir for read-only access. It
+// does not acquire the directory lock, so multiple readers (and one
+// concurrent writer) can coexist. Mutating methods on the returned Store
+// will return an error from BadgerDB.
+func OpenReadOnly(dir string) (*Store, error) {
+	opts := badgerdb.DefaultOptions(dir).
+		WithLogger(nil).
+		WithReadOnly(true).
+		WithBypassLockGuard(true)
+	db, err := badgerdb.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("badger open %s (ro): %w", dir, err)
+	}
+	return &Store{db: db}, nil
+}
+
 // --- Object CAS ---
 
 func objKey(h store.Hash) []byte {

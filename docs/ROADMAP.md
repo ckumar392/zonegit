@@ -11,16 +11,16 @@
 **Goal:** end-to-end demo of init → commit → log → diff → blame → serve.
 
 ### Must have
-- [ ] Repo skeleton, `go.mod`, Makefile, CI
-- [ ] `pkg/store` interface + Badger adapter + memory adapter + conformance suite
-- [ ] `pkg/object` — Blob/Tree/Commit/Tag, canonical encoding, hashing
-- [ ] `pkg/zone` — miekg/dns ↔ Blob, zonefile parser using miekg/dns
-- [ ] `pkg/refs` — branches, HEAD, reflog, CAS
-- [ ] `pkg/history` — log, diff, blame
-- [ ] `pkg/repo` — public Go API
-- [ ] `cmd/dnsdb` — init, import (zonefile), add, commit, log, show, diff, blame, status, branch (list/create/delete), checkout, cat-object
-- [ ] `cmd/dnsdbd` — minimal DNS server resolving against HEAD
-- [ ] Demo script that scripts the full flow + asserts answers
+- [x] Repo skeleton, `go.mod`, Makefile, CI
+- [x] `pkg/store` interface + Badger adapter + memory adapter + conformance suite
+- [x] `pkg/object` — Blob/Tree/Commit/Tag, canonical encoding, hashing
+- [x] `pkg/zone` — miekg/dns ↔ Blob, zonefile parser using miekg/dns
+- [x] `pkg/refs` — branches, HEAD, reflog, CAS
+- [x] `pkg/history` — log, diff, blame
+- [x] `pkg/repo` — public Go API
+- [x] `cmd/dnsdb` — init, import (zonefile), set, delete, log, show, diff, blame, status, branch (list/create), checkout, cat-object
+- [x] `cmd/dnsdbd` — minimal DNS server resolving against HEAD (read-only Badger; per-query reopen for live updates)
+- [x] Demo script that scripts the full flow (`scripts/demo.sh`)
 
 ### Explicitly NOT in v0
 - Branch *cutover at the server* (server reads HEAD only; branches exist
