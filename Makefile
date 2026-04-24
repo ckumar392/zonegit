@@ -10,8 +10,8 @@ all: lint test build ## Lint, test, and build
 
 build: ## Build all binaries into ./bin
 	@mkdir -p $(BINDIR)
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINDIR)/dnsdb  ./cmd/dnsdb
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINDIR)/dnsdbd ./cmd/dnsdbd
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINDIR)/zonegit  ./cmd/zonegit
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BINDIR)/zonegitd ./cmd/zonegitd
 
 test: ## Run unit tests
 	$(GO) test -count=1 $(PKG)
@@ -43,7 +43,7 @@ demo: build ## End-to-end demo: import, commit, dig, edit, dig
 	./scripts/demo.sh
 
 clean: ## Remove build artifacts
-	rm -rf $(BINDIR) $(COVERAGE) /tmp/dnsdb-demo
+	rm -rf $(BINDIR) $(COVERAGE) /tmp/zonegit-demo
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

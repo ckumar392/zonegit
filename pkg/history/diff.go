@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // ChangeOp describes the nature of an RRset change between two trees.

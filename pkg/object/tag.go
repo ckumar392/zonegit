@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // Tag is an immutable named pointer with an optional message and signature.

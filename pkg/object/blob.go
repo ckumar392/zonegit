@@ -1,6 +1,6 @@
 package object
 
-import "github.com/ckumar392/dnsdb/pkg/store"
+import "github.com/ckumar392/zonegit/pkg/store"
 
 // Blob is the content-addressable form of one RRset.
 //

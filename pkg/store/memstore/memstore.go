@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // Store is an in-memory store.Storage. The zero value is NOT usable; call

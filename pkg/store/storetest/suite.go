@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 type Factory func(t *testing.T) store.Storage

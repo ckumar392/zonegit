@@ -1,4 +1,4 @@
-module github.com/ckumar392/dnsdb
+module github.com/ckumar392/zonegit
 
 go 1.24.0
 

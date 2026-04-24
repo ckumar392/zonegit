@@ -1,4 +1,4 @@
-# dnsdb Object Model
+# zonegit Object Model
 
 > **Read this before writing code.** Every other module derives from these
 > shapes. If we get this right, branches/merge/canary/signing are all
@@ -28,7 +28,7 @@
 
 ## 2. Object kinds
 
-There are exactly **five** object kinds in dnsdb. Anything else is built on top.
+There are exactly **five** object kinds in zonegit. Anything else is built on top.
 
 | Kind | Purpose | Hashed? | Mutable? |
 |---|---|---|---|
@@ -209,7 +209,7 @@ changed.
 
 ## 6. Commit
 
-A **Commit** is the version identifier — what `dnsdb log` walks.
+A **Commit** is the version identifier — what `zonegit log` walks.
 
 ### Canonical payload format (text, line-oriented, like Git)
 
@@ -231,7 +231,7 @@ committer <name> <email> <unix_ts> <tz_offset>
 - Trivial to debug with hex tools
 - Easy to extend (new optional headers like `signature`, `selector` don't
   break old parsers — unknown headers ignored)
-- Direct path to a `dnsdb cat-commit <hash>` plumbing command
+- Direct path to a `zonegit cat-commit <hash>` plumbing command
 
 ### Multi-parent commits
 
@@ -240,7 +240,7 @@ A commit can have 0, 1, or 2+ parents:
 - **1 parent** — normal commit
 - **2 parents** — merge commit (v1+)
 
-This is how `dnsdb merge` records that two branches converged.
+This is how `zonegit merge` records that two branches converged.
 
 ### Signature header
 
@@ -327,8 +327,8 @@ Append-only log. Format per ref:
 <old-hash> <new-hash> <author> <unix_ts> <tz>  <ref-op>  <message>
 ```
 
-Never compacted, never deleted (in v0). Forensic recovery: `dnsdb reflog
-<branch>` shows every movement. Recovery: `dnsdb reset --hard <hash>` from
+Never compacted, never deleted (in v0). Forensic recovery: `zonegit reflog
+<branch>` shows every movement. Recovery: `zonegit reset --hard <hash>` from
 any past entry.
 
 ---
@@ -336,7 +336,7 @@ any past entry.
 ## 9. Working tree (server-resolution view)
 
 The "working tree" is the materialized state the **DNS server** resolves
-against. In dnsdb it's nothing more than:
+against. In zonegit it's nothing more than:
 
 > **A pointer (HEAD or chosen branch) to a commit, plus a cache of that
 > commit's tree for fast lookup.**
@@ -352,7 +352,7 @@ There is no separate mutable "live state." The server resolves
 ```
 
 This means **flipping a branch ref is the entire cutover**. No reload,
-no rebuild, no propagation. Microseconds. This is why `dnsdb merge canary
+no rebuild, no propagation. Microseconds. This is why `zonegit merge canary
 main` is atomic from a serving perspective.
 
 For canary mode (v2), the resolver evaluates a list of `(selector, branch)`
@@ -389,8 +389,8 @@ RRset `api.foo.com A 1.2.3.4` as blob `B0`.
 
 User runs:
 ```
-dnsdb set api.foo.com A 5.6.7.8
-dnsdb commit -m "promote new api"
+zonegit set api.foo.com A 5.6.7.8
+zonegit commit -m "promote new api"
 ```
 
 Steps:
@@ -408,9 +408,9 @@ Steps:
 Total new objects: 1 blob + 3 trees + 1 commit = 5 small writes.
 Total old objects: untouched, still referenced by `C0`, still resolvable.
 
-`dnsdb resolve api.foo.com A --at C0` returns 1.2.3.4.
-`dnsdb resolve api.foo.com A --at C1` returns 5.6.7.8.
-`dnsdb diff C0 C1` returns:
+`zonegit resolve api.foo.com A --at C0` returns 1.2.3.4.
+`zonegit resolve api.foo.com A --at C1` returns 5.6.7.8.
+`zonegit diff C0 C1` returns:
 ```
 - api.foo.com.  A  300  1.2.3.4
 + api.foo.com.  A  300  5.6.7.8

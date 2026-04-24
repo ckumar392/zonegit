@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/history"
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/store"
-	"github.com/ckumar392/dnsdb/pkg/store/memstore"
+	"github.com/ckumar392/zonegit/pkg/history"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store/memstore"
 )
 
 func ctx() context.Context { return context.Background() }

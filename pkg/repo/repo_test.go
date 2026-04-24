@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/repo"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/miekg/dns"
 )
 

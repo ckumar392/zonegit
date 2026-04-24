@@ -8,20 +8,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/history"
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/refs"
-	"github.com/ckumar392/dnsdb/pkg/store"
-	"github.com/ckumar392/dnsdb/pkg/store/badger"
-	"github.com/ckumar392/dnsdb/pkg/store/memstore"
-	"github.com/ckumar392/dnsdb/pkg/zone"
+	"github.com/ckumar392/zonegit/pkg/history"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/refs"
+	"github.com/ckumar392/zonegit/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store/badger"
+	"github.com/ckumar392/zonegit/pkg/store/memstore"
+	"github.com/ckumar392/zonegit/pkg/zone"
 	"github.com/miekg/dns"
 )
 
 // DefaultBranch is the branch v0 uses for new repos.
 const DefaultBranch = "main"
 
-// Repo is the public dnsdb handle.
+// Repo is the public zonegit handle.
 //
 // A Repo is bound to one Storage and one zone (the zone name is part of
 // init metadata so that label paths in trees can be relative to the zone
@@ -170,7 +170,7 @@ func (r *Repo) Delete(fqdn, rrtype string) {
 	r.staging[stagingKey{fqdn: normFQDN(fqdn), rrtype: strings.ToUpper(rrtype)}] = stagingValue{tombstone: true}
 }
 
-// StagedCount returns the number of pending edits (used for `dnsdb status`).
+// StagedCount returns the number of pending edits (used for `zonegit status`).
 func (r *Repo) StagedCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

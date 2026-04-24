@@ -8,13 +8,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/repo"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
 )
 
-// Globals populated from --repo / DNSDB_REPO.
+// Globals populated from --repo / ZONEGIT_REPO.
 var (
 	flagRepoPath string
 	flagZone     string
@@ -22,13 +22,13 @@ var (
 
 func main() {
 	root := &cobra.Command{
-		Use:           "dnsdb",
+		Use:           "zonegit",
 		Short:         "Versioned authoritative DNS state store",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&flagRepoPath, "repo", envDefault("DNSDB_REPO", "./.dnsdb"), "path to dnsdb repository (Badger dir)")
-	root.PersistentFlags().StringVar(&flagZone, "zone", envDefault("DNSDB_ZONE", ""), "zone name (required for some commands)")
+	root.PersistentFlags().StringVar(&flagRepoPath, "repo", envDefault("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository (Badger dir)")
+	root.PersistentFlags().StringVar(&flagZone, "zone", envDefault("ZONEGIT_ZONE", ""), "zone name (required for some commands)")
 
 	root.AddCommand(
 		newInitCmd(),
@@ -70,8 +70,8 @@ func openRepo() (*repo.Repo, error) {
 }
 
 func authorIdentity() object.Identity {
-	name := os.Getenv("DNSDB_AUTHOR_NAME")
-	email := os.Getenv("DNSDB_AUTHOR_EMAIL")
+	name := os.Getenv("ZONEGIT_AUTHOR_NAME")
+	email := os.Getenv("ZONEGIT_AUTHOR_EMAIL")
 	if name == "" {
 		if u, err := user.Current(); err == nil {
 			name = u.Username
@@ -91,7 +91,7 @@ func authorIdentity() object.Identity {
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init <zone>",
-		Short: "Initialize a new dnsdb repository",
+		Short: "Initialize a new zonegit repository",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
@@ -102,7 +102,7 @@ func newInitCmd() *cobra.Command {
 			if err := r.Init(context.Background(), args[0]); err != nil {
 				return err
 			}
-			fmt.Printf("Initialized empty dnsdb repository in %s for zone %q\n", flagRepoPath, args[0])
+			fmt.Printf("Initialized empty zonegit repository in %s for zone %q\n", flagRepoPath, args[0])
 			return nil
 		},
 	}
@@ -121,7 +121,7 @@ func newImportCmd() *cobra.Command {
 			}
 			defer r.Close()
 			if r.Zone() == "" {
-				return fmt.Errorf("zone not set; pass --zone or run 'dnsdb init' first")
+				return fmt.Errorf("zone not set; pass --zone or run 'zonegit init' first")
 			}
 			f, err := os.Open(args[0])
 			if err != nil {
@@ -154,7 +154,7 @@ func newSetCmd() *cobra.Command {
 		Use:     "set <name> <type> <ttl> <rdata...>",
 		Short:   "Set an RRset and commit",
 		Args:    cobra.MinimumNArgs(4),
-		Example: "  dnsdb set api.foo.com. A 300 1.2.3.4 5.6.7.8 -m 'bump api'",
+		Example: "  zonegit set api.foo.com. A 300 1.2.3.4 5.6.7.8 -m 'bump api'",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
 			if err != nil {

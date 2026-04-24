@@ -3,7 +3,7 @@ package object
 import (
 	"testing"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 func mkHash(b byte) store.Hash {

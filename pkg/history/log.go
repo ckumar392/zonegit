@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // Entry is one commit in a log listing.

@@ -1,4 +1,4 @@
-# dnsdb — Vision & Planning Notes
+# zonegit — Vision & Planning Notes
 
 > Captured from initial design discussion. This file is the canonical "why"
 > of the project. Re-read before any major design decision.
@@ -14,11 +14,11 @@ signed, and queryable.
 
 ## 2. The inversion that makes this special
 
-| Today's DNS | dnsdb |
+| Today's DNS | zonegit |
 |---|---|
 | Zone state is **mutable** — SET A record, old value is gone | Zone state is **immutable + content-addressed** |
 | Audit logs are bolted-on side effects | Audit is the data model |
-| Rollback = restore from backup, pray | Rollback = `dnsdb revert <hash>` |
+| Rollback = restore from backup, pray | Rollback = `zonegit revert <hash>` |
 | Change review = Jira ticket | Change review = PR with RR-aware diff |
 | One global state | N branches, all valid, all servable |
 
@@ -26,7 +26,7 @@ That single inversion unlocks every capability below.
 
 ## 3. Capabilities unlocked
 
-- **Point-in-time resolution** — `dig @dnsdb foo.com @2025-10-01T14:00`
+- **Point-in-time resolution** — `dig @zonegit foo.com @2025-10-01T14:00`
 - **Cryptographic audit** — Merkle DAG + Ed25519 signed commits, tamper-evident
 - **Surgical rollback** — undo one change without clobbering 14 unrelated ones
 - **Zone PRs** — branch, edit, diff, review, merge
@@ -39,29 +39,29 @@ That single inversion unlocks every capability below.
 
 ```bash
 # Time travel
-dig @dnsdb foo.com A @2025-10-01T14:00Z
+dig @zonegit foo.com A @2025-10-01T14:00Z
 
 # Forensics
-dnsdb blame foo.com A
+zonegit blame foo.com A
 # api.foo.com  A  10.0.99.4  <- bob@acme, commit 7c2a, 12 days ago, "failover to DR"
 
 # Surgical revert
-dnsdb revert 7c2a
+zonegit revert 7c2a
 # undoes ONE change, leaves 14 others alone
 
 # PR-style workflow
-dnsdb checkout -b hotfix
-dnsdb set foo.com A 1.2.3.4
-dnsdb diff main hotfix
-dnsdb merge hotfix → main
+zonegit checkout -b hotfix
+zonegit set foo.com A 1.2.3.4
+zonegit diff main hotfix
+zonegit merge hotfix → main
 
 # Canary cutover
-dnsdb branch create canary
-dnsdb set api.foo.com A 5.6.7.8
-dnsdb serve --branch=canary --select="client.subnet=10.0.0.0/8"
-dnsdb merge canary main      # promote, atomic
+zonegit branch create canary
+zonegit set api.foo.com A 5.6.7.8
+zonegit serve --branch=canary --select="client.subnet=10.0.0.0/8"
+zonegit merge canary main      # promote, atomic
 # OR
-dnsdb branch delete canary   # rollback, zero impact
+zonegit branch delete canary   # rollback, zero impact
 ```
 
 ---
@@ -72,7 +72,7 @@ dnsdb branch delete canary   # rollback, zero impact
 **Persona:** SRE at an  customer (Acme Corp). Junior NetOps fat-fingers
 a record at 11 PM. 14 legitimate changes happen between then and 2 AM PagerDuty.
 Today's only safe recovery is "restore 6h-old snapshot" → causes a *second*
-outage. With dnsdb: `dnsdb log → dnsdb blame → dnsdb revert <hash>` in 45 sec.
+outage. With zonegit: `zonegit log → zonegit blame → zonegit revert <hash>` in 45 sec.
 
 **Important clarification:** the "engineer" in this story is the **customer's
 SRE** managing **their own** zone data via the  product, NOT an 
@@ -83,11 +83,11 @@ on top of it.
 PCI-DSS / SOC2 / FedRAMP environments. "Prove `payments.bank.com` resolved to
 IP X on March 14 09:00 UTC, and the change was approved by an authorized
 engineer." Today: 3 days of log archaeology → low-confidence PDF.
-With dnsdb: one signed-and-verifiable command.
+With zonegit: one signed-and-verifiable command.
 
 ### UC3 — GitOps for DNS
 Cloud-native teams cobble `octodns`/`dnscontrol`/CI to manage DNS like
-Terraform. The DNS server still has its own state that drifts. With dnsdb,
+Terraform. The DNS server still has its own state that drifts. With zonegit,
 **the DNS server IS the Git repo.** No drift possible. Push → served. Merge
 PR → atomic cutover.
 
@@ -96,8 +96,8 @@ Current import pipeline (`DeleteOrphanNstarObjects`,
 `ReplaceExistingSnapshotWithCurrentSnapshot`, the metadata-NULL bug fixed in
 DDIDNS-7943) is reinventing what content-addressable storage gives free:
 - Each NIOS sync = one commit on `nios/<grid-id>` branch
-- "What changed?" = `dnsdb diff HEAD~1`
-- "Roll back bad import" = `dnsdb reset --hard`
+- "What changed?" = `zonegit diff HEAD~1`
+- "Roll back bad import" = `zonegit reset --hard`
 - Orphan detection = trivial set difference between trees
 - The DDIDNS-7943 bug class **literally cannot exist** in this model
 
@@ -105,7 +105,7 @@ DDIDNS-7943) is reinventing what content-addressable storage gives free:
 DNS today has no "5% of users get the new value" knob. Weighted RR is random,
 not targeted. Geo-steering targets only by location. None are versioned.
 
-dnsdb makes the candidate state a **first-class versioned object**. Server
+zonegit makes the candidate state a **first-class versioned object**. Server
 matches incoming queries against selectors → routes to a branch's tree:
 
 ```
@@ -139,7 +139,7 @@ Real scenarios where UC5 changes how customers operate:
 ### UC6 — Forensics after a DNS hijack
 Phished account injects malicious A record for 47 minutes, reverts. Three
 months later, security wants forensics. Today: maybe possible, low confidence.
-With dnsdb: malicious commit still in the object store, signed (or notably
+With zonegit: malicious commit still in the object store, signed (or notably
 unsigned), exact byte range of impact, signed diff, reflog of every branch
 movement. Git-style forensics for DNS doesn't exist anywhere.
 
@@ -150,7 +150,7 @@ movement. Git-style forensics for DNS doesn't exist anywhere.
  sells NIOS (legacy on-prem) and your control plane DDI (cloud-managed). Strategic
 narrative: enterprises want cloud-managed DNS *with enterprise-grade governance*.
 
-**dnsdb is the governance layer your control plane is missing today:**
+**zonegit is the governance layer your control plane is missing today:**
 - No safe rollback of a single change
 - No diff/preview before apply
 - No multi-stage promotion (dev → staging → prod)
@@ -168,7 +168,7 @@ narrative: enterprises want cloud-managed DNS *with enterprise-grade governance*
    KMS. Target: banks, healthcare, federal. Cisco Umbrella / Akamai / NS1 /
    Cloudflare have **nothing like it.**
 
-3. **Open-source halo project** — Apache 2.0 `dnsdb` + CoreDNS plugin. Talks
+3. **Open-source halo project** — Apache 2.0 `zonegit` + CoreDNS plugin. Talks
    at DNS-OARC, KubeCon, USENIX LISA. HashiCorp/Confluent/Grafana playbook:
    open-core drives enterprise sales.
 
@@ -197,7 +197,7 @@ narrative: enterprises want cloud-managed DNS *with enterprise-grade governance*
 | Signing | Ed25519 | Fast, small, well-supported |
 | RPC | gRPC | Plumbing/porcelain split a la Git |
 | Server | Custom DNS server (miekg/dns) → CoreDNS plugin later | Faster path to demo than forking BIND |
-| Module path | `github.com/ckumar392/dnsdb` | Per user decision |
+| Module path | `github.com/ckumar392/zonegit` | Per user decision |
 
 ## 8. v0 scope (locked)
 
@@ -205,7 +205,7 @@ narrative: enterprises want cloud-managed DNS *with enterprise-grade governance*
 - Single zone
 - Single Badger backend
 - Round-trip: `init → add → commit → log → diff → blame → serve`
-- `dig @dnsdb foo.com` answers correctly from the latest commit
+- `dig @zonegit foo.com` answers correctly from the latest commit
 - All operations covered by tests
 
 **Non-goals for v0:**

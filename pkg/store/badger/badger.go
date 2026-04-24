@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 	badgerdb "github.com/dgraph-io/badger/v4"
 )
 

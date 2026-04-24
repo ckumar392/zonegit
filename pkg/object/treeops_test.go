@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
-	"github.com/ckumar392/dnsdb/pkg/store/memstore"
+	"github.com/ckumar392/zonegit/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store/memstore"
 )
 
 // I4 (NotFound): walking a missing path returns store.ErrNotFound.

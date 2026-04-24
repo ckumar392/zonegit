@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# scripts/demo.sh — end-to-end v0 demo for dnsdb.
+# scripts/demo.sh — end-to-end v0 demo for zonegit.
 #
 # What this script proves, in one shot:
 #
 #   1. BUILD            — compiles both binaries from source
-#                           bin/dnsdb   (CLI: write side, history queries)
-#                           bin/dnsdbd  (authoritative DNS server: read side)
+#                           bin/zonegit   (CLI: write side, history queries)
+#                           bin/zonegitd  (authoritative DNS server: read side)
 #
 #   2. INIT             — creates a fresh BadgerDB-backed repo at $REPO and
 #                         records the zone name as a config-time fact.
@@ -16,7 +16,7 @@
 #                         this step the repo has 1 commit, 5 RRsets, and a
 #                         content-addressed root tree.
 #
-#   4. SERVE            — starts dnsdbd on 127.0.0.1:$PORT serving HEAD of
+#   4. SERVE            — starts zonegitd on 127.0.0.1:$PORT serving HEAD of
 #                         'main'. The daemon opens Badger READ-ONLY (no
 #                         lock), so the writer side stays usable.
 #
@@ -58,14 +58,14 @@
 # This is exactly the v0 "Done" definition from docs/ROADMAP.md.
 #
 # Usage:
-#   ./scripts/demo.sh                       # /tmp/dnsdb-demo, UDP/TCP 15353
-#   PORT=5353 REPO=./.dnsdb ./scripts/demo.sh
+#   ./scripts/demo.sh                       # /tmp/zonegit-demo, UDP/TCP 15353
+#   PORT=5353 REPO=./.zonegit ./scripts/demo.sh
 #   ZONE=example.org. ./scripts/demo.sh     # different zone
 #
 # Side effects:
 #   - rebuilds binaries into ./bin/
 #   - wipes and recreates $REPO
-#   - leaves dnsdbd's stdout/stderr at /tmp/dnsdb-demo.log
+#   - leaves zonegitd's stdout/stderr at /tmp/zonegit-demo.log
 #   - kills the daemon on exit (trap)
 set -euo pipefail
 
@@ -74,7 +74,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-REPO="${REPO:-/tmp/dnsdb-demo}"
+REPO="${REPO:-/tmp/zonegit-demo}"
 PORT="${PORT:-15353}"
 ZONE="${ZONE:-foo.com.}"
 BIN="$ROOT/bin"
@@ -94,15 +94,15 @@ cleanup() {
 trap cleanup EXIT
 
 step 1 "build" "compile both binaries from source"
-run "go build -o $BIN/dnsdb  ./cmd/dnsdb"
-run "go build -o $BIN/dnsdbd ./cmd/dnsdbd"
+run "go build -o $BIN/zonegit  ./cmd/zonegit"
+run "go build -o $BIN/zonegitd ./cmd/zonegitd"
 
 step 2 "init" "create a fresh BadgerDB repo and record the zone name"
 rm -rf "$REPO"
-run "$BIN/dnsdb --repo $REPO init $ZONE"
+run "$BIN/zonegit --repo $REPO init $ZONE"
 
 step 3a "write a zonefile" "RFC 1035 text — exactly what BIND/Knot/PowerDNS would consume"
-ZONEFILE="$(mktemp /tmp/dnsdb-demo-zone.XXXXXX)"
+ZONEFILE="$(mktemp /tmp/zonegit-demo-zone.XXXXXX)"
 cat >"$ZONEFILE" <<EOF
 \$ORIGIN $ZONE
 \$TTL 300
@@ -115,14 +115,14 @@ EOF
 run "cat $ZONEFILE"
 
 step 3b "import" "parse via miekg/dns, canonicalise each RRset, hash, write commit #1 on main"
-run "$BIN/dnsdb --repo $REPO --zone $ZONE import $ZONEFILE -m 'initial import'"
+run "$BIN/zonegit --repo $REPO --zone $ZONE import $ZONEFILE -m 'initial import'"
 
-step 4 "start dnsdbd" "open Badger READ-ONLY (no lock) so the writer side stays usable"
-"$BIN/dnsdbd" --repo "$REPO" --zone "$ZONE" --listen "127.0.0.1:$PORT" \
-  > /tmp/dnsdb-demo.log 2>&1 &
+step 4 "start zonegitd" "open Badger READ-ONLY (no lock) so the writer side stays usable"
+"$BIN/zonegitd" --repo "$REPO" --zone "$ZONE" --listen "127.0.0.1:$PORT" \
+  > /tmp/zonegit-demo.log 2>&1 &
 SERVER_PID=$!
 sleep 1
-echo "  server pid: $SERVER_PID   log: /tmp/dnsdb-demo.log"
+echo "  server pid: $SERVER_PID   log: /tmp/zonegit-demo.log"
 
 step 5a "dig api.$ZONE A" "expect 1.2.3.4 (direct answer from HEAD's tree)"
 run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
@@ -131,27 +131,27 @@ step 5b "dig www.$ZONE A" "expect CNAME -> api.$ZONE -> 1.2.3.4 (server-side sin
 run "dig +short @127.0.0.1 -p $PORT www.$ZONE A"
 
 step 6 "edit" "change api A from 1.2.3.4 to 9.9.9.9 — this auto-commits commit #2 on main"
-run "$BIN/dnsdb --repo $REPO --zone $ZONE set -m 'bump api -> 9.9.9.9' api.$ZONE A 300 9.9.9.9"
+run "$BIN/zonegit --repo $REPO --zone $ZONE set -m 'bump api -> 9.9.9.9' api.$ZONE A 300 9.9.9.9"
 
 step 7 "dig api.$ZONE A again" "expect 9.9.9.9 — same daemon, no restart, no zone-reload, no SOA bump"
 run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
 
 step 8 "log" "first-parent walk of commits (Git semantics over DNS state)"
-run "$BIN/dnsdb --repo $REPO log"
+run "$BIN/zonegit --repo $REPO log"
 
 step 9 "diff HEAD~1 HEAD" "lockstep tree walk; structural sharing skips unchanged subtrees"
-run "$BIN/dnsdb --repo $REPO diff HEAD~1 HEAD"
+run "$BIN/zonegit --repo $REPO diff HEAD~1 HEAD"
 
 step 10 "blame api.$ZONE A" "find the commit that introduced the *current* RRset value"
-run "$BIN/dnsdb --repo $REPO --zone $ZONE blame api.$ZONE A"
+run "$BIN/zonegit --repo $REPO --zone $ZONE blame api.$ZONE A"
 
 step 11 "status" "repo path, zone, branch, HEAD"
-run "$BIN/dnsdb --repo $REPO --zone $ZONE status"
+run "$BIN/zonegit --repo $REPO --zone $ZONE status"
 
 echo
 bold "── done ──"
 dim   "  repo:        $REPO"
-dim   "  server log:  /tmp/dnsdb-demo.log"
+dim   "  server log:  /tmp/zonegit-demo.log"
 dim   "  zonefile:    $ZONEFILE"
 dim   "  inspect manually:  dig @127.0.0.1 -p $PORT <name> <type>"
 dim   "  daemon will be killed on script exit (trap)."

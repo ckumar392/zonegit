@@ -1,4 +1,4 @@
-# dnsdb Architecture
+# zonegit Architecture
 
 > Sister doc to [OBJECT_MODEL.md](OBJECT_MODEL.md). This file says **how
 > the code is laid out**, **which package depends on which**, and **what
@@ -13,8 +13,8 @@
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  cmd/dnsdb         (CLI: cobra)                            │
-│  cmd/dnsdbd        (server daemon: gRPC + DNS)             │
+│  cmd/zonegit         (CLI: cobra)                            │
+│  cmd/zonegitd        (server daemon: gRPC + DNS)             │
 │  plugin/coredns    (CoreDNS plugin, v2+)                   │
 └──────────────────────────────┬─────────────────────────────┘
                                │
@@ -167,27 +167,27 @@ between Badger and Postgres. No `if pgBackend { ... }`. Ever.
   `Log()`, `Diff()`, `Blame()`, `Branch()`, `Checkout()`, `Resolve()`.
 - The "Repo" struct holds the open `Storage`, the loaded HEAD, an in-memory
   staging area (for `add` → `commit` workflow).
-- This is the public Go API anyone embedding dnsdb consumes.
+- This is the public Go API anyone embedding zonegit consumes.
 
-### `cmd/dnsdb`
+### `cmd/zonegit`
 - cobra-based CLI. Each subcommand is ~30 lines: parse flags, call
   `pkg/repo`, format output.
 - No business logic in cmd/.
 
-### `cmd/dnsdbd`
+### `cmd/zonegitd`
 - Long-running server: gRPC for control plane, UDP/TCP DNS for resolution.
 - Reads from `pkg/resolve`. Watches refs for branch promotions and
   invalidates caches. v0 has no gRPC yet — just DNS.
 
 ### `plugin/coredns` (v2+)
 - Thin shim that wraps `pkg/resolve` as a CoreDNS plugin.
-- Lets dnsdb be embedded into existing CoreDNS deployments.
+- Lets zonegit be embedded into existing CoreDNS deployments.
 
 ---
 
-## 4. Lifecycle of a request: `dnsdb commit -m "promote api"`
+## 4. Lifecycle of a request: `zonegit commit -m "promote api"`
 
-1. **`cmd/dnsdb commit`** parses flags, calls `repo.Commit(ctx, msg)`.
+1. **`cmd/zonegit commit`** parses flags, calls `repo.Commit(ctx, msg)`.
 2. **`pkg/repo`** reads its in-memory staging area, computes the new tree
    on top of HEAD's current tree:
    - Calls `pkg/zone.BlobFromRRset(...)` for each modified RRset.
@@ -205,9 +205,9 @@ auto-rebase the staged changes onto the new head. v0 fails loudly.
 
 ---
 
-## 5. Lifecycle of a request: `dig @dnsdb api.foo.com`
+## 5. Lifecycle of a request: `dig @zonegit api.foo.com`
 
-1. **`cmd/dnsdbd`** receives a DNS message via `miekg/dns.Server`.
+1. **`cmd/zonegitd`** receives a DNS message via `miekg/dns.Server`.
 2. Hands it to **`pkg/resolve.Resolve(query)`**.
 3. `pkg/resolve` evaluates the (selector → branch) rules, picks branch
    (default: `main`).
@@ -252,11 +252,11 @@ commit's tree, this is O(N) memory reads. Fast.
 - Structured logging via `log/slog` (Go 1.21+ stdlib). No logrus.
 - Metrics via `prometheus/client_golang` exposed on a sidecar port.
 - Key metrics from day 1:
-  - `dnsdb_object_reads_total{kind=...}`
-  - `dnsdb_object_writes_total{kind=...}`
-  - `dnsdb_ref_cas_attempts_total{result=ok|conflict}`
-  - `dnsdb_resolve_latency_seconds` (histogram)
-  - `dnsdb_repo_open_seconds`
+  - `zonegit_object_reads_total{kind=...}`
+  - `zonegit_object_writes_total{kind=...}`
+  - `zonegit_ref_cas_attempts_total{result=ok|conflict}`
+  - `zonegit_resolve_latency_seconds` (histogram)
+  - `zonegit_repo_open_seconds`
 - Tracing via OpenTelemetry, optional, behind a flag.
 
 ---
@@ -271,7 +271,7 @@ commit's tree, this is O(N) memory reads. Fast.
   - "Encode then decode is identity"
   - "Hash is deterministic"
   - "RR list permutation does not change blob hash"
-- **End-to-end test** (`tests/e2e/`) that spawns `dnsdbd`, runs the CLI,
+- **End-to-end test** (`tests/e2e/`) that spawns `zonegitd`, runs the CLI,
   fires `miekg/dns` queries, asserts answers.
 
 ---
@@ -286,9 +286,9 @@ commit's tree, this is O(N) memory reads. Fast.
 
 ---
 
-## 11. Deployment shapes — where dnsdb fits
+## 11. Deployment shapes — where zonegit fits
 
-> dnsdb is **not** a DNS server. It is a **versioned state store** that
+> zonegit is **not** a DNS server. It is a **versioned state store** that
 > sits inside the control plane, replacing the mutable database that today
 > holds authoritative zone data.
 
@@ -299,7 +299,7 @@ BEFORE                                  AFTER
 ──────                                  ─────
 [ UI / API ]                            [ UI / API ]
       ↓                                       ↓
-[ Mutable DB ]                          [ dnsdb (Merkle DAG, commits) ]
+[ Mutable DB ]                          [ zonegit (Merkle DAG, commits) ]
       ↓                                       ↓
 [ Zone files ]                          [ Zone snapshot (HEAD) ]
       ↓                                       ↓
@@ -308,7 +308,7 @@ BEFORE                                  AFTER
 
 ### What gets replaced
 
-| Before (mutable)       | After (dnsdb)                        |
+| Before (mutable)       | After (zonegit)                        |
 |------------------------|--------------------------------------|
 | DB tables / rows       | Append-only commits (Blob/Tree/Commit) |
 | Periodic snapshots     | Commit history (full DAG)            |
@@ -323,7 +323,7 @@ BEFORE                                  AFTER
 
 ### Two shipped shapes
 
-1. **Standalone `dnsdbd`** (v0+) — a binary that opens a dnsdb repo and
+1. **Standalone `zonegitd`** (v0+) — a binary that opens a zonegit repo and
    serves DNS on port 53 directly. Useful for demos, dev, and small
    deployments. Internally uses `pkg/resolve`.
 2. **CoreDNS plugin** (v6) — a thin shim (~200 LoC) wrapping
@@ -337,7 +337,7 @@ other authoritative server.
 
 BIND is C; writing a safe, maintained C plugin that bridges to a Go
 object store is fragile and unlikely to be accepted upstream. Instead,
-`dnsdbd` is a **drop-in replacement** for BIND — same port, same
+`zonegitd` is a **drop-in replacement** for BIND — same port, same
 protocol, same zone transfer (AXFR/IXFR, v5+).
 
 
@@ -353,7 +353,7 @@ protocol, same zone transfer (AXFR/IXFR, v5+).
 - **No reflection-based serialization for object payloads.** Canonical
   form is hand-written and unit-tested. Reflection-based encoding
   invariably breaks canonicality on Go upgrades.
-- **No reaching across layer boundaries.** `cmd/dnsdb` calling
+- **No reaching across layer boundaries.** `cmd/zonegit` calling
   `pkg/object` directly is a CI failure.
 - **No "TODO: handle this later" without a linked issue.** TODOs that
   reference an issue number are fine; loose TODOs are not.

@@ -1,4 +1,4 @@
-# dnsdb Roadmap
+# zonegit Roadmap
 
 > Strict sequencing. Each version builds on the previous without rework.
 > If a v(N) need would force a v(N-k) rewrite, we redesign v(N-k) NOW
@@ -18,8 +18,8 @@
 - [x] `pkg/refs` — branches, HEAD, reflog, CAS
 - [x] `pkg/history` — log, diff, blame
 - [x] `pkg/repo` — public Go API
-- [x] `cmd/dnsdb` — init, import (zonefile), set, delete, log, show, diff, blame, status, branch (list/create), checkout, cat-object
-- [x] `cmd/dnsdbd` — minimal DNS server resolving against HEAD (read-only Badger; per-query reopen for live updates)
+- [x] `cmd/zonegit` — init, import (zonefile), set, delete, log, show, diff, blame, status, branch (list/create), checkout, cat-object
+- [x] `cmd/zonegitd` — minimal DNS server resolving against HEAD (read-only Badger; per-query reopen for live updates)
 - [x] Demo script that scripts the full flow (`scripts/demo.sh`)
 
 ### Explicitly NOT in v0
@@ -38,12 +38,12 @@
 ### Done definition
 A senior engineer can clone the repo, run `make demo`, and watch:
 1. A zonefile import and commit
-2. `dnsdb log` show one commit
+2. `zonegit log` show one commit
 3. `dig @127.0.0.1 -p 5353 api.foo.com` return the right A
-4. `dnsdb set api.foo.com A 9.9.9.9 && dnsdb commit -m "test"`
-5. `dnsdb log` show two commits
-6. `dnsdb diff HEAD~1 HEAD` show the RR change
-7. `dnsdb blame api.foo.com A` show "you, just now"
+4. `zonegit set api.foo.com A 9.9.9.9 && zonegit commit -m "test"`
+5. `zonegit log` show two commits
+6. `zonegit diff HEAD~1 HEAD` show the RR change
+7. `zonegit blame api.foo.com A` show "you, just now"
 8. `dig` return the new value
 
 ---
@@ -51,9 +51,9 @@ A senior engineer can clone the repo, run `make demo`, and watch:
 ## v1 — "Branches mean something at serve time" (~1 week)
 
 - [ ] Server can be told "serve branch X" and switch atomically on ref change
-- [ ] `dnsdb merge <branch>` (fast-forward + 3-way for non-conflicting changes)
-- [ ] `dnsdb revert <commit>` — produces an inverse commit
-- [ ] `dnsdb reset --hard <ref-ish>`
+- [ ] `zonegit merge <branch>` (fast-forward + 3-way for non-conflicting changes)
+- [ ] `zonegit revert <commit>` — produces an inverse commit
+- [ ] `zonegit reset --hard <ref-ish>`
 - [ ] `pkg/merge` with conflict types
 
 ### Why this is a separate version
@@ -69,7 +69,7 @@ The headline UC5 feature.
 - [ ] Selector DSL: minimal grammar (`client.subnet`, `hash`, `geo`,
       `time`, boolean ops)
 - [ ] Server config: ordered list of `(selector → branch)` rules
-- [ ] `dnsdb serve --branch=canary --select="..."` shorthand
+- [ ] `zonegit serve --branch=canary --select="..."` shorthand
 - [ ] EDNS Client Subnet handling
 - [ ] Metrics: per-branch query rate so customers can see canary % in
       Grafana
@@ -85,8 +85,8 @@ implementation; getting the syntax wrong is annoying to fix later.
 
 - [ ] Ed25519 keypair management (file-based v3, KMS in v4+)
 - [ ] Sign commits and tags
-- [ ] `dnsdb verify <ref>` — verifies signature chain back to root
-- [ ] `dnsdb log --signature` shows signer per commit
+- [ ] `zonegit verify <ref>` — verifies signature chain back to root
+- [ ] `zonegit log --signature` shows signer per commit
 - [ ] Server policy: refuse to serve unsigned commits when `--require-signed`
 
 ### Why now
@@ -127,7 +127,7 @@ the interface is wrong, and we fix it before going further.
 - [ ] Terraform provider
 - [ ] OpenAPI for gRPC API
 - [ ] Web UI for change review (separate repo)
-- [ ] BIND9 catalog-zone bridge (publish dnsdb branches as BIND zones)
+- [ ] BIND9 catalog-zone bridge (publish zonegit branches as BIND zones)
 
 ---
 

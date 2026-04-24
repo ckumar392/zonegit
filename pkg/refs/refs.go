@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/object"
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // Well-known ref prefixes.

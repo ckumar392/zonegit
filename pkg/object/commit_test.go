@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 func TestCommitRoundTrip(t *testing.T) {

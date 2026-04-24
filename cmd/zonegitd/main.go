@@ -1,4 +1,4 @@
-// Command dnsdbd is a minimal authoritative DNS responder backed by a dnsdb
+// Command zonegitd is a minimal authoritative DNS responder backed by a zonegit
 // repository. It always serves the current HEAD of the configured branch.
 //
 // Scope (v0):
@@ -22,15 +22,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ckumar392/dnsdb/pkg/repo"
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/repo"
+	"github.com/ckumar392/zonegit/pkg/store"
 	"github.com/miekg/dns"
 )
 
 func main() {
 	var (
-		repoPath = flag.String("repo", envOr("DNSDB_REPO", "./.dnsdb"), "path to dnsdb repository")
-		zone     = flag.String("zone", envOr("DNSDB_ZONE", ""), "zone name (e.g. foo.com.)")
+		repoPath = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
+		zone     = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (e.g. foo.com.)")
 		listen   = flag.String("listen", "127.0.0.1:5353", "address to listen on (UDP+TCP)")
 		branch   = flag.String("branch", "main", "branch to serve")
 	)
@@ -63,7 +63,7 @@ func main() {
 	tcp := &dns.Server{Addr: *listen, Net: "tcp"}
 
 	go func() {
-		log.Printf("dnsdbd: serving zone %s from %s on %s/udp", *zone, *repoPath, *listen)
+		log.Printf("zonegitd: serving zone %s from %s on %s/udp", *zone, *repoPath, *listen)
 		if err := udp.ListenAndServe(); err != nil {
 			fatal("udp listener: %v", err)
 		}
@@ -77,7 +77,7 @@ func main() {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	<-sigc
-	log.Printf("dnsdbd: shutting down")
+	log.Printf("zonegitd: shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = udp.ShutdownContext(ctx)
@@ -141,7 +141,7 @@ func (s *server) handle(w dns.ResponseWriter, req *dns.Msg) {
 	// deployment would use SIGHUP-triggered reload or Badger Subscribe.
 	r, err := s.snapshot()
 	if err != nil {
-		log.Printf("dnsdbd: snapshot: %v", err)
+		log.Printf("zonegitd: snapshot: %v", err)
 		resp.Rcode = dns.RcodeServerFailure
 		_ = w.WriteMsg(resp)
 		return
@@ -150,7 +150,7 @@ func (s *server) handle(w dns.ResponseWriter, req *dns.Msg) {
 	// Resolve HEAD of branch.
 	head, err := r.Resolve(ctx, "refs/heads/"+s.branch)
 	if err != nil {
-		log.Printf("dnsdbd: resolve %s: %v", s.branch, err)
+		log.Printf("zonegitd: resolve %s: %v", s.branch, err)
 		resp.Rcode = dns.RcodeServerFailure
 		_ = w.WriteMsg(resp)
 		return
@@ -203,7 +203,7 @@ func (s *server) handle(w dns.ResponseWriter, req *dns.Msg) {
 		}
 		s.attachSOA(ctx, r, head, resp)
 	default:
-		log.Printf("dnsdbd: lookup %s %s: %v", rel, qtype, err)
+		log.Printf("zonegitd: lookup %s %s: %v", rel, qtype, err)
 		resp.Rcode = dns.RcodeServerFailure
 	}
 
@@ -241,6 +241,6 @@ func envOr(key, def string) string {
 }
 
 func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "dnsdbd: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "zonegitd: "+format+"\n", args...)
 	os.Exit(1)
 }

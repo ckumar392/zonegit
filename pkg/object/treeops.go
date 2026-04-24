@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // LoadTree fetches a Tree by hash from a Storage.

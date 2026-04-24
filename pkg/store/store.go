@@ -1,6 +1,6 @@
-// Package store defines the only persistence seam in dnsdb.
+// Package store defines the only persistence seam in zonegit.
 //
-// Every dnsdb storage backend (in-memory, Badger, Postgres, ...) implements
+// Every zonegit storage backend (in-memory, Badger, Postgres, ...) implements
 // the Storage interface. Nothing above this package knows or cares which
 // backend is in use. See docs/ARCHITECTURE.md section 2 for the design rationale.
 package store

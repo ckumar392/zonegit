@@ -29,7 +29,7 @@ linters-settings:
       - name: var-naming
         disabled: false
   goimports:
-    local-prefixes: github.com/ckumar392/dnsdb
+    local-prefixes: github.com/ckumar392/zonegit
 
 issues:
   exclude-use-default: false

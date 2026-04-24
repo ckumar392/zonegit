@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ckumar392/dnsdb/pkg/store"
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // I1 (determinism): HashOf is a pure function of (kind, payload).
