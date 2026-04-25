@@ -7,7 +7,7 @@ coverage.*
 
 # Local data
 /var/
-/.dnsdb/
+/.zonegit/
 *.badger
 *.db
 
