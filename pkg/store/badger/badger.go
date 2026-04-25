@@ -9,8 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ckumar392/zonegit/pkg/store"
 	badgerdb "github.com/dgraph-io/badger/v4"
+
+	"github.com/ckumar392/zonegit/pkg/store"
 )
 
 // Key prefixes for namespace separation within BadgerDB.

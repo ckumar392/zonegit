@@ -5,9 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miekg/dns"
+
 	"github.com/ckumar392/zonegit/pkg/object"
 	"github.com/ckumar392/zonegit/pkg/repo"
-	"github.com/miekg/dns"
 )
 
 func ctx() context.Context { return context.Background() }

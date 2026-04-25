@@ -8,10 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ckumar392/zonegit/pkg/object"
-	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
+
+	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/repo"
 )
 
 // Globals populated from --repo / ZONEGIT_REPO.

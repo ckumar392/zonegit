@@ -22,9 +22,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/miekg/dns"
+
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/store"
-	"github.com/miekg/dns"
 )
 
 func main() {

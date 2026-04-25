@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miekg/dns"
+
 	"github.com/ckumar392/zonegit/pkg/history"
 	"github.com/ckumar392/zonegit/pkg/object"
 	"github.com/ckumar392/zonegit/pkg/refs"
@@ -15,7 +17,6 @@ import (
 	"github.com/ckumar392/zonegit/pkg/store/badger"
 	"github.com/ckumar392/zonegit/pkg/store/memstore"
 	"github.com/ckumar392/zonegit/pkg/zone"
-	"github.com/miekg/dns"
 )
 
 // DefaultBranch is the branch v0 uses for new repos.

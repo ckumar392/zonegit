@@ -6,9 +6,10 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/miekg/dns"
+
 	"github.com/ckumar392/zonegit/pkg/object"
 	"github.com/ckumar392/zonegit/pkg/repo"
-	"github.com/miekg/dns"
 )
 
 func buildZone(b *testing.B, n int) (*repo.Repo, []string) {

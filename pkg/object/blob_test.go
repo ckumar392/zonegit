@@ -18,7 +18,7 @@ func TestInvariant_BlobRoundTrip(t *testing.T) {
 	for _, payload := range cases {
 		b := DecodeBlob(payload)
 		_, obj := b.Encode()
-		if !bytes.Equal(obj.Payload, payload) && !(payload == nil && len(obj.Payload) == 0) {
+		if !bytes.Equal(obj.Payload, payload) && (payload != nil || len(obj.Payload) != 0) {
 			t.Fatalf("round-trip mismatch: in=%x out=%x", payload, obj.Payload)
 		}
 	}

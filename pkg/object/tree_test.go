@@ -55,7 +55,7 @@ func TestTreeEncodeSortsCanonically(t *testing.T) {
 		t.Fatal("permuted entries must produce identical hashes after canonical sort")
 	}
 
-	decoded, err := DecodeTree(([]byte)((store.Object{Kind: string(KindTree), Payload: nil}).Payload))
+	decoded, err := DecodeTree((store.Object{Kind: string(KindTree), Payload: nil}).Payload)
 	_ = decoded
 	_ = err
 }
