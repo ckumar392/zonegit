@@ -28,14 +28,27 @@ import (
 	"github.com/ckumar392/zonegit/pkg/store"
 )
 
+// Build-time metadata, populated via -ldflags by goreleaser.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	var (
-		repoPath = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
-		zone     = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (e.g. foo.com.)")
-		listen   = flag.String("listen", "127.0.0.1:5353", "address to listen on (UDP+TCP)")
-		branch   = flag.String("branch", "main", "branch to serve")
+		repoPath    = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
+		zone        = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (e.g. foo.com.)")
+		listen      = flag.String("listen", "127.0.0.1:5353", "address to listen on (UDP+TCP)")
+		branch      = flag.String("branch", "main", "branch to serve")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("zonegitd %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	if *zone == "" {
 		fatal("--zone is required")

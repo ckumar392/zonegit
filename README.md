@@ -1,5 +1,10 @@
 # zonegit
 
+[![CI](https://github.com/ckumar392/zonegit/actions/workflows/ci.yml/badge.svg)](https://github.com/ckumar392/zonegit/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ckumar392/zonegit.svg)](https://pkg.go.dev/github.com/ckumar392/zonegit)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ckumar392/zonegit)](https://goreportcard.com/report/github.com/ckumar392/zonegit)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 A content-addressed, version-controlled object model for authoritative DNS
 zones, with Git-style semantics (commits, branches, tags, refs, blame, diff).
 
@@ -66,6 +71,13 @@ Run `make help` to list all targets.
 - [docs/OBJECT_MODEL.md](docs/OBJECT_MODEL.md) — canonical form, hashing,
   and invariants for Blob, Tree, Commit, Tag, and Ref.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — milestones and sequencing.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, the change-proposal process, and the
+[good first issue](https://github.com/ckumar392/zonegit/labels/good%20first%20issue)
+list. Released versions are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -21,12 +21,21 @@ var (
 	flagZone     string
 )
 
+// Build-time metadata, populated via -ldflags by goreleaser.
+// Defaults make `go build` / `go install` still produce something useful.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	root := &cobra.Command{
 		Use:           "zonegit",
 		Short:         "Versioned authoritative DNS state store",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 	}
 	root.PersistentFlags().StringVar(&flagRepoPath, "repo", envDefault("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository (Badger dir)")
 	root.PersistentFlags().StringVar(&flagZone, "zone", envDefault("ZONEGIT_ZONE", ""), "zone name (required for some commands)")
