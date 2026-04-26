@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/ckumar392/zonegit/discussions
+    about: For open-ended questions, design discussion, or "is this a bug?" — please use Discussions.

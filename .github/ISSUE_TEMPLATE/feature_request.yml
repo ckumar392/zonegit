@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a new capability or change in behaviour.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case, not the solution. "I want to roll back one record without affecting others" beats "add a --revert flag".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Optional. If you have a sketch, share it. CLI shape, API signature, etc.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Roughly which package(s) does this touch?
+      multiple: true
+      options:
+        - cmd/zonegit (CLI)
+        - cmd/zonegitd (server)
+        - pkg/object
+        - pkg/store
+        - pkg/refs
+        - pkg/zone
+        - pkg/history
+        - pkg/merge
+        - pkg/repo
+        - docs / build / CI
+        - not sure
