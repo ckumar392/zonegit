@@ -47,21 +47,21 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.staging) > 0 {
-		return MergeResult{}, fmt.Errorf("Merge: refusing to merge with %d staged changes", len(r.staging))
+		return MergeResult{}, fmt.Errorf("merge: refusing to merge with %d staged changes", len(r.staging))
 	}
 
 	branch, ours, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
-		return MergeResult{}, fmt.Errorf("Merge: read HEAD: %w", err)
+		return MergeResult{}, fmt.Errorf("merge: read HEAD: %w", err)
 	}
 	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
 	if strings.TrimPrefix(theirsBranch, refs.BranchPrefix) == branchName {
-		return MergeResult{}, fmt.Errorf("Merge: cannot merge a branch into itself")
+		return MergeResult{}, fmt.Errorf("merge: cannot merge a branch into itself")
 	}
 
 	theirs, err := r.refs.GetBranch(ctx, strings.TrimPrefix(theirsBranch, refs.BranchPrefix))
 	if err != nil {
-		return MergeResult{}, fmt.Errorf("Merge: %w", err)
+		return MergeResult{}, fmt.Errorf("merge: %w", err)
 	}
 
 	// Already up to date?
@@ -79,7 +79,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	if ours.IsZero() {
 		// Orphan branch: just point it at theirs.
 		if err := r.refs.CreateBranch(ctx, branchName, theirs); err != nil {
-			return MergeResult{}, fmt.Errorf("Merge: ff create %s: %w", branchName, err)
+			return MergeResult{}, fmt.Errorf("merge: ff create %s: %w", branchName, err)
 		}
 		_ = r.refs.AppendReflog(ctx, branch, ours, theirs, author.String(), "merge", "fast-forward "+theirsBranch)
 		return MergeResult{FastForward: true, Commit: theirs}, nil
@@ -90,7 +90,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	}
 	if ff {
 		if err := r.refs.UpdateBranch(ctx, branchName, ours, theirs); err != nil {
-			return MergeResult{}, fmt.Errorf("Merge: ff %s: %w", branchName, err)
+			return MergeResult{}, fmt.Errorf("merge: ff %s: %w", branchName, err)
 		}
 		_ = r.refs.AppendReflog(ctx, branch, ours, theirs, author.String(), "merge", "fast-forward "+theirsBranch)
 		return MergeResult{FastForward: true, Commit: theirs}, nil
@@ -99,7 +99,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	// True 3-way: find a merge base.
 	base, err := MergeBase(ctx, r.storage, ours, theirs)
 	if err != nil {
-		return MergeResult{}, fmt.Errorf("Merge: merge-base: %w", err)
+		return MergeResult{}, fmt.Errorf("merge: merge-base: %w", err)
 	}
 
 	mergedTree, conflicts, err := merge.MergeTrees(ctx, r.storage,
@@ -108,7 +108,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 		treeOf(ctx, r.storage, theirs),
 	)
 	if err != nil {
-		return MergeResult{}, fmt.Errorf("Merge: tree merge: %w", err)
+		return MergeResult{}, fmt.Errorf("merge: tree merge: %w", err)
 	}
 	if len(conflicts) > 0 {
 		return MergeResult{Conflicts: conflicts}, nil
@@ -132,7 +132,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 		return MergeResult{}, err
 	}
 	if err := r.refs.UpdateBranch(ctx, branchName, ours, commitHash); err != nil {
-		return MergeResult{}, fmt.Errorf("Merge: advance %s: %w", branchName, err)
+		return MergeResult{}, fmt.Errorf("merge: advance %s: %w", branchName, err)
 	}
 	_ = r.refs.AppendReflog(ctx, branch, ours, commitHash, author.String(), "merge", msg)
 	return MergeResult{Commit: commitHash}, nil
@@ -254,32 +254,32 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.staging) > 0 {
-		return store.ZeroHash, fmt.Errorf("Revert: refusing to revert with %d staged changes", len(r.staging))
+		return store.ZeroHash, fmt.Errorf("revert: refusing to revert with %d staged changes", len(r.staging))
 	}
 
 	target, err := r.refs.Resolve(ctx, refish)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Revert: resolve %q: %w", refish, err)
+		return store.ZeroHash, fmt.Errorf("revert: resolve %q: %w", refish, err)
 	}
 	tc, err := loadCommit(ctx, r.storage, target)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Revert: load target: %w", err)
+		return store.ZeroHash, fmt.Errorf("revert: load target: %w", err)
 	}
 	var parentTree store.Hash
 	if len(tc.Parents) > 0 {
 		pc, err := loadCommit(ctx, r.storage, tc.Parents[0])
 		if err != nil {
-			return store.ZeroHash, fmt.Errorf("Revert: load parent: %w", err)
+			return store.ZeroHash, fmt.Errorf("revert: load parent: %w", err)
 		}
 		parentTree = pc.Tree
 	}
 
 	branch, head, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Revert: read HEAD: %w", err)
+		return store.ZeroHash, fmt.Errorf("revert: read HEAD: %w", err)
 	}
 	if head.IsZero() {
-		return store.ZeroHash, fmt.Errorf("Revert: HEAD is empty")
+		return store.ZeroHash, fmt.Errorf("revert: HEAD is empty")
 	}
 	headCommit, err := loadCommit(ctx, r.storage, head)
 	if err != nil {
@@ -290,10 +290,10 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 	// applying their inverse on top of HEAD.
 	changes, err := history.Diff(ctx, r.storage, parentTree, tc.Tree)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Revert: diff: %w", err)
+		return store.ZeroHash, fmt.Errorf("revert: diff: %w", err)
 	}
 	if len(changes) == 0 {
-		return store.ZeroHash, fmt.Errorf("Revert: %s introduced no changes", target.Short())
+		return store.ZeroHash, fmt.Errorf("revert: %s introduced no changes", target.Short())
 	}
 
 	curTree := headCommit.Tree
@@ -312,12 +312,12 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 		}
 		curTree, err = object.UpdateTree(ctx, r.storage, curTree, ch.Path, ch.RRType, leaf)
 		if err != nil {
-			return store.ZeroHash, fmt.Errorf("Revert: apply inverse %s %s: %w", ch.FQDN(), ch.RRType, err)
+			return store.ZeroHash, fmt.Errorf("revert: apply inverse %s %s: %w", ch.FQDN(), ch.RRType, err)
 		}
 	}
 
 	if curTree == headCommit.Tree {
-		return store.ZeroHash, fmt.Errorf("Revert: nothing to do; current tree already matches inverse")
+		return store.ZeroHash, fmt.Errorf("revert: nothing to do; current tree already matches inverse")
 	}
 
 	if msg == "" {
@@ -340,7 +340,7 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 	}
 	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
 	if err := r.refs.UpdateBranch(ctx, branchName, head, commitHash); err != nil {
-		return store.ZeroHash, fmt.Errorf("Revert: advance %s: %w", branchName, err)
+		return store.ZeroHash, fmt.Errorf("revert: advance %s: %w", branchName, err)
 	}
 	_ = r.refs.AppendReflog(ctx, branch, head, commitHash, author.String(), "revert", msg)
 	return commitHash, nil
@@ -357,11 +357,11 @@ func (r *Repo) ResetHard(ctx context.Context, refish string, author object.Ident
 
 	target, err := r.refs.Resolve(ctx, refish)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Reset: resolve %q: %w", refish, err)
+		return store.ZeroHash, fmt.Errorf("reset: resolve %q: %w", refish, err)
 	}
 	branch, head, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
-		return store.ZeroHash, fmt.Errorf("Reset: read HEAD: %w", err)
+		return store.ZeroHash, fmt.Errorf("reset: read HEAD: %w", err)
 	}
 	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
 
@@ -373,11 +373,11 @@ func (r *Repo) ResetHard(ctx context.Context, refish string, author object.Ident
 
 	if head.IsZero() {
 		if err := r.refs.CreateBranch(ctx, branchName, target); err != nil {
-			return store.ZeroHash, fmt.Errorf("Reset: create %s: %w", branchName, err)
+			return store.ZeroHash, fmt.Errorf("reset: create %s: %w", branchName, err)
 		}
 	} else {
 		if err := r.refs.UpdateBranch(ctx, branchName, head, target); err != nil {
-			return store.ZeroHash, fmt.Errorf("Reset: move %s: %w", branchName, err)
+			return store.ZeroHash, fmt.Errorf("reset: move %s: %w", branchName, err)
 		}
 	}
 	_ = r.refs.AppendReflog(ctx, branch, head, target, author.String(), "reset", "reset --hard "+refish)
