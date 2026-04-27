@@ -55,7 +55,36 @@
 #
 #  11. STATUS           — repo path, zone, current branch, HEAD hash.
 #
-# This is exactly the v0 "Done" definition from docs/ROADMAP.md.
+#  12. BRANCH + EDIT    — creates a 'canary' branch off main, switches HEAD
+#                         to it, and edits api.foo.com. again
+#                         (9.9.9.9 -> 7.7.7.7) on canary only. main stays
+#                         where it was. The running daemon serves --branch
+#                         main, so the canary edit is invisible to it for
+#                         now (this is the point of branches).
+#
+#  13. MERGE (ff)       — switches HEAD back to main and runs
+#                         'zonegit merge canary'. Because main has not
+#                         moved since canary forked, this is a clean
+#                         fast-forward — no merge commit, just an atomic
+#                         CAS on the branch ref. The daemon picks up the
+#                         new HEAD on the next dig:
+#                           api.foo.com.  A     -> 7.7.7.7
+#
+#  14. REVERT           — produces a new commit on main whose tree is the
+#                         inverse of the previous one. Reverting HEAD undoes
+#                         the canary edit on main. Same daemon, no restart:
+#                           api.foo.com.  A     -> 9.9.9.9
+#                         The reverted commits are still in the DAG; only
+#                         the branch tip has moved forward.
+#
+#  15. RESET --hard     — moves the main branch tip back to HEAD~1 (the
+#                         post-merge commit, i.e. the parent of the revert
+#                         we just made). The revert becomes unreachable
+#                         from main but its objects remain. Dig snaps back:
+#                           api.foo.com.  A     -> 7.7.7.7
+#
+# Steps 1–11 cover the v0 "Done" definition; 12–15 cover v1
+# (branches, 3-way merge primitives, revert, reset).
 #
 # Usage:
 #   ./scripts/demo.sh                       # /tmp/zonegit-demo, UDP/TCP 15353
@@ -82,7 +111,7 @@ mkdir -p "$BIN"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
-step()  { echo; bold "── [$1/11] $2 ──"; shift 2; [[ $# -gt 0 ]] && dim "      $*"; }
+step()  { echo; bold "── [$1/15] $2 ──"; shift 2; [[ $# -gt 0 ]] && dim "      $*"; }
 run()   { printf '\033[2m$ %s\033[0m\n' "$*"; eval "$@"; }
 
 cleanup() {
@@ -147,6 +176,27 @@ run "$BIN/zonegit --repo $REPO --zone $ZONE blame api.$ZONE A"
 
 step 11 "status" "repo path, zone, branch, HEAD"
 run "$BIN/zonegit --repo $REPO --zone $ZONE status"
+
+step 12 "branch + edit on canary" "fork main, switch HEAD to canary, edit api there only"
+run "$BIN/zonegit --repo $REPO branch canary"
+run "$BIN/zonegit --repo $REPO checkout canary"
+run "$BIN/zonegit --repo $REPO --zone $ZONE set -m 'canary: api -> 7.7.7.7' api.$ZONE A 300 7.7.7.7"
+dim   "      daemon is still serving --branch main, so dig still sees 9.9.9.9:"
+run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
+
+step 13 "merge canary into main (fast-forward)" "switch back, merge; main has not moved -> CAS-only ff"
+run "$BIN/zonegit --repo $REPO checkout main"
+run "$BIN/zonegit --repo $REPO --zone $ZONE merge canary"
+dim   "      daemon picks up the new HEAD on the next packet:"
+run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
+
+step 14 "revert HEAD on main" "produce an inverse commit; api A goes back to 9.9.9.9"
+run "$BIN/zonegit --repo $REPO --zone $ZONE revert -m 'undo canary api bump' HEAD"
+run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
+
+step 15 "reset --hard HEAD~1" "branch tip jumps forward to the post-merge commit; revert is now unreachable"
+run "$BIN/zonegit --repo $REPO --zone $ZONE reset --hard HEAD~1"
+run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
 
 echo
 bold "── done ──"

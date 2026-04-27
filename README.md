@@ -17,9 +17,13 @@ servers (BIND, Knot, PowerDNS, Route 53) don't expose at all.
 
 ## Status
 
-**v0.1 — public preview.** Single zone, single process, no replication.
-The on-disk format and public Go API are not yet stable; expect
-breakage between minor versions until v1.
+**v0.2 — public preview.** Single zone, single process, no replication.
+Branches now mean something at serve time: `zonegit merge`, `revert`,
+and `reset --hard` are wired through the daemon's per-query HEAD
+re-resolve, so a `dig` issued moments after a `merge` sees the new
+answer without restarting anything. The on-disk format and public Go
+API are still not stable; expect breakage between minor versions until
+v1.0.
 
 ## Demo
 
@@ -133,12 +137,12 @@ make build      # produces ./bin/zonegit and ./bin/zonegitd
 
 `zonegit` models a zone as a Merkle DAG of immutable objects:
 
-| Object | What it holds |
-|---|---|
-| **Blob** | One canonicalised RRset (one `(name, type)` coordinate). |
-| **Tree** | A directory of labels mapping to subtrees and RRset blobs. |
-| **Commit** | A snapshot of the zone tree, with parent links and metadata. |
-| **Tag / Ref** | Named pointers into the commit graph. |
+| Object        | What it holds                                                |
+| ------------- | ------------------------------------------------------------ |
+| **Blob**      | One canonicalised RRset (one `(name, type)` coordinate).     |
+| **Tree**      | A directory of labels mapping to subtrees and RRset blobs.   |
+| **Commit**    | A snapshot of the zone tree, with parent links and metadata. |
+| **Tag / Ref** | Named pointers into the commit graph.                        |
 
 Names with identical content hash to identical blobs, so equivalent
 zones share storage. Subtree hashes mean `diff` skips unchanged
@@ -183,6 +187,8 @@ make help        # list all targets
   storage seam, object lifecycles.
 - [docs/OBJECT_MODEL.md](docs/OBJECT_MODEL.md) — canonical form,
   hashing, and invariants for Blob, Tree, Commit, Tag, and Ref.
+- [docs/SELECTORS.md](docs/SELECTORS.md) — v2 selector grammar spec
+  (canary serving, geo cutover, percentage rollout).
 - [docs/ROADMAP.md](docs/ROADMAP.md) — milestones and sequencing.
 
 ## Contributing

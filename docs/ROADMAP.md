@@ -50,11 +50,14 @@ A senior engineer can clone the repo, run `make demo`, and watch:
 
 ## v1 — "Branches mean something at serve time" (~1 week)
 
-- [ ] Server can be told "serve branch X" and switch atomically on ref change
-- [ ] `zonegit merge <branch>` (fast-forward + 3-way for non-conflicting changes)
-- [ ] `zonegit revert <commit>` — produces an inverse commit
-- [ ] `zonegit reset --hard <ref-ish>`
-- [ ] `pkg/merge` with conflict types
+- [x] Server can be told "serve branch X" and switch atomically on ref change
+      (`zonegitd --branch X` resolves `refs/heads/X` per query, picking up
+       commits from the writer process without a restart)
+- [x] `zonegit merge <branch>` (fast-forward + 3-way for non-conflicting changes)
+- [x] `zonegit revert <commit>` — produces an inverse commit
+- [x] `zonegit reset --hard <ref-ish>`
+- [x] `pkg/merge` with conflict types (`both-modified`, `deleted-modified`,
+      `add-add`)
 
 ### Why this is a separate version
 Merge correctness deserves focused testing. Adding it to v0 risks shipping
@@ -76,8 +79,10 @@ The headline UC5 feature.
 - [ ] Soak test: 10k qps mixed traffic, no leaks, p99 < 1ms
 
 ### Why this is a separate version
-Selector grammar deserves a real spec doc (`docs/SELECTORS.md`) before
-implementation; getting the syntax wrong is annoying to fix later.
+Selector grammar deserves a real spec doc ([docs/SELECTORS.md](SELECTORS.md))
+before implementation; getting the syntax wrong is annoying to fix later.
+The spec is locked; v2 code starts only after the open questions in
+SELECTORS.md §8 are answered.
 
 ---
 
@@ -133,15 +138,15 @@ the interface is wrong, and we fix it before going further.
 
 ## Risk register (revisit before starting each version)
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Canonical RR encoding has subtle bugs that break dedup | Med | High | Property tests in v0; corpus from public zonefiles |
-| Badger's GC behavior surprises us at scale | Low | Med | Memory adapter for tests; doc behavior; switch to Pebble if needed |
-| Selector DSL grows into a programming language | Med | Med | Lock minimal grammar before v2 starts; resist scope creep |
-| Postgres adapter exposes leaky `Storage` interface | Med | High | Build memory + Badger BEFORE designing Postgres so interface is real |
-| Merge conflicts in DNS are weirder than Git's | High | Med | Explicit conflict-type taxonomy in v1 with tests per type |
-| Performance regression as we add layers | Med | Med | Continuous benchmarks (`testing/Benchmark`) tracked in CI from v0 |
-| The whole thing turns out to be slower than zone-file BIND | Low | Critical | Day-1 benchmark dimension. Stop and redesign if we exceed 2x BIND latency. |
+| Risk                                                       | Likelihood | Impact   | Mitigation                                                                 |
+| ---------------------------------------------------------- | ---------- | -------- | -------------------------------------------------------------------------- |
+| Canonical RR encoding has subtle bugs that break dedup     | Med        | High     | Property tests in v0; corpus from public zonefiles                         |
+| Badger's GC behavior surprises us at scale                 | Low        | Med      | Memory adapter for tests; doc behavior; switch to Pebble if needed         |
+| Selector DSL grows into a programming language             | Med        | Med      | Lock minimal grammar before v2 starts; resist scope creep                  |
+| Postgres adapter exposes leaky `Storage` interface         | Med        | High     | Build memory + Badger BEFORE designing Postgres so interface is real       |
+| Merge conflicts in DNS are weirder than Git's              | High       | Med      | Explicit conflict-type taxonomy in v1 with tests per type                  |
+| Performance regression as we add layers                    | Med        | Med      | Continuous benchmarks (`testing/Benchmark`) tracked in CI from v0          |
+| The whole thing turns out to be slower than zone-file BIND | Low        | Critical | Day-1 benchmark dimension. Stop and redesign if we exceed 2x BIND latency. |
 
 ---
 

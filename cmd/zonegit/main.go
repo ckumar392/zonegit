@@ -53,6 +53,9 @@ func main() {
 		newBranchCmd(),
 		newCheckoutCmd(),
 		newCatObjectCmd(),
+		newMergeCmd(),
+		newRevertCmd(),
+		newResetCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
