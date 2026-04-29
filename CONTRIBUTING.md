@@ -16,7 +16,7 @@ guidelines below are meant to keep that conversation cheap.
 
 ## Local setup
 
-You need Go 1.23+ and `make`. Optional: `golangci-lint` (recommended)
+You need Go 1.24+ and `make`. Optional: `golangci-lint` (recommended)
 and `dig` (for the demo).
 
 ```sh

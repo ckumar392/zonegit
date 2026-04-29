@@ -109,6 +109,54 @@ api.foo.com. 300 IN A 1.2.3.4
 That last query — *"what did this name resolve to N commits ago?"* —
 is the one that no DNS tool shipping today can answer.
 
+### 6. Branch and merge (v0.2+)
+
+Create a `canary` branch, edit it, then fast-forward merge into `main`.
+The daemon picks up the new tip on the very next `dig` — no restart.
+
+```sh
+$ zonegit --repo ./.zonegit branch canary
+$ zonegit --repo ./.zonegit checkout canary
+
+$ zonegit --repo ./.zonegit --zone foo.com. \
+    set api.foo.com. A 300 7.7.7.7 -m "canary: api -> 7.7.7.7"
+[canary b4e10c8] canary: api -> 7.7.7.7
+
+# daemon is still on --branch main, so dig still returns 9.9.9.9
+$ dig @127.0.0.1 -p 15353 +short api.foo.com. A
+9.9.9.9
+
+$ zonegit --repo ./.zonegit checkout main
+$ zonegit --repo ./.zonegit --zone foo.com. merge canary
+Fast-forward to b4e10c8.
+
+$ dig @127.0.0.1 -p 15353 +short api.foo.com. A
+7.7.7.7
+```
+
+### 7. Revert
+
+```sh
+$ zonegit --repo ./.zonegit --zone foo.com. revert HEAD
+Reverted as c353b7b
+
+$ dig @127.0.0.1 -p 15353 +short api.foo.com. A
+9.9.9.9
+```
+
+### 8. Reset
+
+```sh
+$ zonegit --repo ./.zonegit --zone foo.com. reset --hard HEAD~1
+HEAD is now at b4e10c8
+
+$ dig @127.0.0.1 -p 15353 +short api.foo.com. A
+7.7.7.7
+```
+
+The full 15-step demo (including branch isolation, merge, revert, and
+reset) runs end-to-end via `make demo`.
+
 ## Install
 
 ### Pre-built binaries
@@ -118,7 +166,7 @@ Download the latest release for your platform from the
 
 ### From source
 
-Requires Go 1.23+.
+Requires Go 1.24+.
 
 ```sh
 go install github.com/ckumar392/zonegit/cmd/zonegit@latest
@@ -163,7 +211,7 @@ pkg/
   zone/         Bridge between miekg/dns RRs and the object model
   refs/         Branches, HEAD, reflog, atomic compare-and-swap
   history/      log, diff, blame
-  merge/        Three-way RRset merge (v1+)
+  merge/        Three-way tree merge with conflict classification
   resolve/      DNS query path
   repo/         Public Go API
 docs/           Design documentation

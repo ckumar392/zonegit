@@ -14,7 +14,7 @@
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  cmd/zonegit         (CLI: cobra)                            │
-│  cmd/zonegitd        (server daemon: gRPC + DNS)             │
+│  cmd/zonegitd        (server daemon: DNS)                    │
 │  plugin/coredns    (CoreDNS plugin, v2+)                   │
 └──────────────────────────────┬─────────────────────────────┘
                                │
