@@ -224,10 +224,30 @@ scripts/        Development helpers
 make build       # build both binaries into ./bin
 make test        # unit tests
 make test-race   # tests with the race detector
+make bench       # benchmarks (5 runs per case; benchstat-friendly)
 make lint        # golangci-lint (or go vet as a fallback)
 make demo        # end-to-end demo
 make help        # list all targets
 ```
+
+## Benchmarks
+
+Run:
+
+```sh
+make bench
+```
+
+To compare two benchmark runs with [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat):
+
+```sh
+go test -run=^$ -bench=. -benchmem -count=5 ./... > old.txt
+go test -run=^$ -bench=. -benchmem -count=5 ./... > new.txt
+benchstat old.txt new.txt
+```
+
+Benchmark numbers are indicative and environment-dependent; treat them as
+regression signals, not strict performance contracts.
 
 ## Documentation
 
