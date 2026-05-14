@@ -14,6 +14,7 @@ import (
 )
 
 const benchZone = "example.com."
+const benchmarkSeed = 1
 
 var benchAuthor = object.Identity{Name: "bench", Email: "bench@example.com"}
 
@@ -27,10 +28,9 @@ func BenchmarkAddSubzone(b *testing.B) {
 	b.ReportAllocs()
 	ctx := context.Background()
 	cases := []struct {
-		name     string
-		subzone  string
-		hosts    int
-		withNest bool
+		name    string
+		subzone string
+		hosts   int
 	}{
 		{name: "Empty", subzone: "sub", hosts: 0},
 		{name: "Small100", subzone: "sub", hosts: 100},
@@ -41,7 +41,7 @@ func BenchmarkAddSubzone(b *testing.B) {
 	for _, tc := range cases {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
-			fixtures := buildSubzoneFixtures(b, benchZone, tc.subzone, tc.hosts, tc.withNest)
+			fixtures := buildSubzoneFixtures(b, benchZone, tc.subzone, tc.hosts, false)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
@@ -88,7 +88,7 @@ func BenchmarkDeleteSubzone(b *testing.B) {
 				commitFixtures(b, ctx, r, "bench seed subzone")
 				b.StartTimer()
 
-				stageFixtureDeletes(r, benchZone, fixtures)
+				deleteFixtures(r, benchZone, fixtures)
 				commitFixtures(b, ctx, r, "bench delete subzone")
 
 				b.StopTimer()
@@ -117,7 +117,7 @@ func BenchmarkSubzoneChurn(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			stageFixtures(b, ctx, r, fixtures)
 			commitFixtures(b, ctx, r, "bench churn add")
-			stageFixtureDeletes(r, benchZone, fixtures)
+			deleteFixtures(r, benchZone, fixtures)
 			commitFixtures(b, ctx, r, "bench churn delete")
 		}
 	})
@@ -138,7 +138,7 @@ func mustOpenBenchRepo(b *testing.B) *repo.Repo {
 
 func buildSubzoneFixtures(b *testing.B, zoneName, subzone string, hostCount int, withNestedChildren bool) []rrsetFixture {
 	b.Helper()
-	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic benchmark data
+	rng := rand.New(rand.NewSource(benchmarkSeed)) //nolint:gosec // deterministic benchmark data
 	zoneNoDot := strings.TrimSuffix(zoneName, ".")
 	subzoneFQDN := dns.Fqdn(fmt.Sprintf("%s.%s", subzone, zoneNoDot))
 
@@ -165,7 +165,7 @@ func buildSubzoneFixtures(b *testing.B, zoneName, subzone string, hostCount int,
 			label = fmt.Sprintf("%s.child", label)
 		}
 		owner := dns.Fqdn(fmt.Sprintf("%s.%s", label, subzoneFQDN))
-		ip := fmt.Sprintf("198.%d.%d.%d", rng.Intn(255), rng.Intn(255), (i%250)+1)
+		ip := fmt.Sprintf("198.%d.%d.%d", rng.Intn(256), rng.Intn(256), rng.Intn(254)+1)
 		fixtures = append(fixtures, rrsetFixture{
 			fqdn:   owner,
 			rrtype: "A",
@@ -186,7 +186,7 @@ func stageFixtures(b *testing.B, ctx context.Context, r *repo.Repo, fixtures []r
 	}
 }
 
-func stageFixtureDeletes(r *repo.Repo, zoneName string, fixtures []rrsetFixture) {
+func deleteFixtures(r *repo.Repo, zoneName string, fixtures []rrsetFixture) {
 	for _, f := range fixtures {
 		r.Delete(relativeNameFromZone(f.fqdn, zoneName), f.rrtype)
 	}
