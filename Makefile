@@ -20,7 +20,7 @@ test-race: ## Run tests with the race detector
 	$(GO) test -race -count=1 $(PKG)
 
 bench: ## Run benchmarks
-	$(GO) test -bench=. -benchmem -run=^$$ $(PKG)
+	$(GO) test -run=^$$ -bench=. -benchmem -count=5 $(PKG)
 
 cover: ## Run tests with coverage report
 	$(GO) test -coverprofile=$(COVERAGE) $(PKG)
