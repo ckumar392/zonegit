@@ -124,10 +124,14 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 	// The resolver owns its own zone identity (set at construction); the
 	// Repo handle is shared across all zones served from this snapshotter.
 
-	// AXFR is a separate animal: it streams instead of producing a single
-	// response, so we never get to the leaf-walk path below.
-	if q.Qtype == dns.TypeAXFR {
+	// Zone-transfer queries stream their response and skip the leaf-walk
+	// path below.
+	switch q.Qtype {
+	case dns.TypeAXFR:
 		r.serveAXFR(w, req, rp)
+		return
+	case dns.TypeIXFR:
+		r.serveIXFR(w, req, rp)
 		return
 	}
 

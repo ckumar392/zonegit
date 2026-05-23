@@ -66,6 +66,7 @@ func main() {
 		canarySpec    = flag.String("canary", "", "canary spec, e.g. \"canary:20\" — sends 20% of traffic (by client /24) to the 'canary' branch")
 		canarySalt    = flag.String("canary-salt", "zonegit", "hash salt for canary bucketing")
 		metricsListen = flag.String("metrics-listen", "", "if set (e.g. \":9353\"), serve Prometheus metrics on this address")
+		configPath    = flag.String("config", "", "path to per-zone YAML config (overrides --branch/--canary/--at on a per-zone basis)")
 		showVersion   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -91,17 +92,24 @@ func main() {
 		fatal("repo has no registered zones; run `zonegit init <zone>` first")
 	}
 
-	// Build the canary router once (shared across zones — the same
-	// branch:pct rule applies to every zone we serve). Zones that don't
-	// have the canary branch will fall back to the default branch via
-	// the resolver's lookup error path.
-	var router resolve.Router
-	if *canarySpec != "" {
-		br, err := route.NewBucketRouter(*branch, *canarySpec, *canarySalt)
-		if err != nil {
-			fatal("parse canary: %v", err)
-		}
-		router = br
+	// Load per-zone config (if --config given). Fall back to flag values
+	// as the daemon-level defaults so the simple "one zone, one branch"
+	// invocation still works without a config file.
+	cfgFile, err := loadDaemonConfig(*configPath)
+	if err != nil {
+		fatal("config: %v", err)
+	}
+	if cfgFile.DefaultBranch == "" {
+		cfgFile.DefaultBranch = *branch
+	}
+	if cfgFile.DefaultAt == "" {
+		cfgFile.DefaultAt = *atRefish
+	}
+	if cfgFile.DefaultCanary == "" {
+		cfgFile.DefaultCanary = *canarySpec
+	}
+	if cfgFile.DefaultSalt == "" {
+		cfgFile.DefaultSalt = *canarySalt
 	}
 
 	snap, err := resolve.NewPollingSnapshotter(*repoPath, nil, 200*time.Millisecond)
@@ -110,28 +118,40 @@ func main() {
 	}
 	defer snap.Close()
 
-	// Time-travel pin: --at applies uniformly to all zones.
-	var pinned store.Hash
-	if *atRefish != "" {
-		probe, err := snap.Snapshot()
-		if err != nil {
-			fatal("resolve --at: snapshot: %v", err)
-		}
-		h, err := probe.Resolve(context.Background(), *atRefish)
-		if err != nil {
-			fatal("resolve --at %q: %v", *atRefish, err)
-		}
-		pinned = h
+	metrics := resolve.NewMetrics()
+	// active-branch info gauge is multi-zone-aware now: show the file path
+	// if a config is loaded, otherwise the default branch / canary string.
+	switch {
+	case *configPath != "":
+		metrics.SetActiveBranch("config=" + *configPath)
+	case cfgFile.DefaultCanary != "":
+		metrics.SetActiveBranch(fmt.Sprintf("%s + %s", cfgFile.DefaultBranch, cfgFile.DefaultCanary))
+	default:
+		metrics.SetActiveBranch(cfgFile.DefaultBranch)
 	}
 
-	metrics := resolve.NewMetrics()
-	switch {
-	case !pinned.IsZero():
-		metrics.SetActiveBranch("pinned@" + pinned.Short())
-	case router != nil:
-		metrics.SetActiveBranch(fmt.Sprintf("%s + %s", *branch, *canarySpec))
-	default:
-		metrics.SetActiveBranch(*branch)
+	// resolvedPin caches the result of resolving a refish to a commit
+	// hash. Per-zone --at refishes are resolved once on first encounter.
+	pinCache := map[string]store.Hash{}
+	resolvePin := func(refish string) store.Hash {
+		if refish == "" {
+			return store.ZeroHash
+		}
+		if h, ok := pinCache[refish]; ok {
+			return h
+		}
+		probe, err := snap.Snapshot()
+		if err != nil {
+			log.Printf("resolve --at %q: snapshot: %v", refish, err)
+			return store.ZeroHash
+		}
+		h, err := probe.Resolve(context.Background(), refish)
+		if err != nil {
+			log.Printf("resolve --at %q: %v", refish, err)
+			return store.ZeroHash
+		}
+		pinCache[refish] = h
+		return h
 	}
 
 	// Build the reconciler that owns the dns.HandleFunc registrations and
@@ -174,35 +194,42 @@ func main() {
 		for _, z := range desired {
 			desiredSet[z] = true
 		}
+		refsToWatch := make([]string, 0, len(desired)*2)
 		for _, z := range desired {
+			rule := cfgFile.ruleFor(z)
+			refsToWatch = append(refsToWatch, refs.BranchRef(z, rule.Branch))
+
+			var router resolve.Router
+			if rule.Canary != "" {
+				br, err := route.NewBucketRouter(rule.Branch, rule.Canary, rule.Salt)
+				if err != nil {
+					log.Printf("zonegitd: zone %s: bad canary %q: %v — skipping canary for this zone", z, rule.Canary, err)
+				} else {
+					router = br
+					refsToWatch = append(refsToWatch, refs.BranchRef(z, br.CanaryBranch))
+				}
+			}
+
 			if registered[z] {
 				continue
 			}
 			cfg := resolve.Config{
 				Zone:          z,
-				DefaultBranch: *branch,
-				PinnedAt:      pinned,
+				DefaultBranch: rule.Branch,
+				PinnedAt:      resolvePin(rule.At),
 				Router:        router,
 				MetricsHook:   metrics,
 			}
 			r := resolve.New(snap, cfg)
 			dns.HandleFunc(z, r.HandleWithRemote)
 			registered[z] = true
-			log.Printf("zonegitd: registered zone %s", z)
+			log.Printf("zonegitd: registered zone %s (%s)", z, rule)
 		}
 		for z := range registered {
 			if !desiredSet[z] {
 				dns.HandleRemove(z)
 				delete(registered, z)
 				log.Printf("zonegitd: unregistered zone %s (no longer in repo)", z)
-			}
-		}
-
-		refsToWatch := make([]string, 0, len(desired)*2)
-		for _, z := range desired {
-			refsToWatch = append(refsToWatch, refs.BranchRef(z, *branch))
-			if br, ok := router.(*route.BucketRouter); ok && router != nil {
-				refsToWatch = append(refsToWatch, refs.BranchRef(z, br.CanaryBranch))
 			}
 		}
 		snap.SetWatchedRefs(refsToWatch)
@@ -228,13 +255,10 @@ func main() {
 	udp := &dns.Server{Addr: *listen, Net: "udp"}
 	tcp := &dns.Server{Addr: *listen, Net: "tcp"}
 
-	switch {
-	case !pinned.IsZero():
-		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (pinned at %s)", len(startupZones), startupZones, *repoPath, *listen, pinned.Short())
-	case router != nil:
-		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (default=%s, canary=%s)", len(startupZones), startupZones, *repoPath, *listen, *branch, *canarySpec)
-	default:
-		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (branch=%s)", len(startupZones), startupZones, *repoPath, *listen, *branch)
+	if *configPath != "" {
+		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (config=%s)", len(startupZones), startupZones, *repoPath, *listen, *configPath)
+	} else {
+		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (default branch=%s)", len(startupZones), startupZones, *repoPath, *listen, cfgFile.DefaultBranch)
 	}
 
 	go func() {
