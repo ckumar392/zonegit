@@ -247,7 +247,28 @@ printf '  dig api.%s : ' "$ZONE"; dig +short @127.0.0.1 -p "$PORT" "api.$ZONE" A
 printf '  dig api.%s : ' "$ZONE2"; dig +short @127.0.0.1 -p "$PORT" "api.$ZONE2" A
 dim   "      one daemon, one port, two zones, no restart. Branches in $ZONE cannot affect $ZONE2 — they live under separate refs."
 
-step 19 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
+step 19 "IXFR — incremental zone transfer" "deltas instead of full re-AXFR after every change"
+dim   "      The first IXFR with an old serial yields the records that changed since then."
+dim   "      Recall the current $ZONE SOA serial:"
+CURRENT_SERIAL=$(dig +short @127.0.0.1 -p $PORT $ZONE SOA | awk '{print $3}')
+echo "  current $ZONE SOA serial: $CURRENT_SERIAL"
+dim   "      Ask for an IXFR with an OLDER serial (serial 1 — the initial import). Expect to see the diff:"
+run "dig +tcp @127.0.0.1 -p $PORT $ZONE IXFR=1 | grep -v '^;' | head -15"
+dim   "      The output is bracketed by SOA records (latest, then old, then changes, then latest again)"
+dim   "      — that's RFC 1995's IXFR shape, computed live from the commit DAG."
+
+step 20 "DNSSEC scaffold (dry-run)" "stage NSEC chain + DNSKEY + RRSIG placeholders in one commit"
+run "$BIN/zonegit --repo $REPO zone switch $ZONE"
+run "$BIN/zonegit --repo $REPO sign-zone --dry-run"
+sleep 0.3
+dim   "      apex DNSKEY visible via dig:"
+run "dig +short @127.0.0.1 -p $PORT $ZONE DNSKEY | head -2"
+dim   "      NSEC chain visible at apex:"
+run "dig +short @127.0.0.1 -p $PORT $ZONE NSEC"
+dim   "      Resolvers will reject these signatures (they're placeholder bytes). Real signing lands in v0.6;"
+dim   "      what's proven here is that DNSSEC records flow through the same content-addressed pipeline as A/MX/TXT."
+
+step 21 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
 run "curl -s http://127.0.0.1:$METRICS_PORT/metrics | head -20"
 
 echo

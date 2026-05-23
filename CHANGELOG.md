@@ -13,6 +13,66 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.5.0] - 2026-05-23
+
+Operational polish + DNSSEC scaffold. v0.5 makes the daemon credible
+to a DDI SME who lives in primary-secondary deployments: IXFR replaces
+the "re-AXFR on every change" approximation, per-zone YAML config
+unlocks "production on tenant A, canary 20% on tenant B" without
+restarts, and the DNSSEC scaffold proves the object pipeline is
+DNSSEC-shaped before v0.6 adds actual crypto.
+
+### Added
+- **IXFR (incremental zone transfer)** — `pkg/resolve/ixfr.go` walks
+  first-parent commits to find the historical commit whose apex SOA
+  matches the client's serial, then emits a single-delta IXFR response
+  (RFC 1995 §4: latest SOA → old SOA → removals → latest SOA →
+  additions → latest SOA). Falls back to AXFR when the historical
+  commit isn't reachable (e.g. after `reset --hard`) or when serials
+  match. Driven entirely by `pkg/history.Diff` — the same routine that
+  powers `zonegit diff`.
+- **Per-zone YAML config** — `zonegitd --config &lt;file&gt;` lets each
+  zone get its own branch / canary / time-travel pin. Top-level
+  defaults apply to zones not in the map; per-zone overrides win on a
+  field-by-field basis. The daemon's reconciler reads this every tick,
+  so adding a zone to the YAML and SIGHUP-equivalent flows are
+  straightforward extensions ([cmd/zonegitd/config.go](cmd/zonegitd/config.go)).
+- **DNSSEC scaffold** — `zonegit sign-zone --dry-run` enumerates every
+  RRset, computes an NSEC chain over the canonical sort of owner
+  names, stages KSK + ZSK at the apex, and stages an RRSIG per RRset
+  with placeholder signature bytes. All five DNSSEC RR types
+  (DNSKEY, RRSIG, NSEC, plus the bits encoded in NSEC's type bitmap)
+  flow through the existing content-addressed object pipeline as
+  ordinary RRsets — proving the architecture supports DNSSEC before
+  v0.6 adds real crypto ([cmd/zonegit/sign_zone.go](cmd/zonegit/sign_zone.go)).
+- **`KindSymref` and `Repo.SwitchZone` continue to underpin the demo**
+  — no new layout changes in v0.5; the v0.4 work paid off here.
+
+### Changed
+- The 19-step demo grew to 21 steps. New step 19 demonstrates IXFR
+  with an older serial, showing the live commit-DAG-driven delta;
+  step 20 runs `sign-zone --dry-run` and digs the resulting DNSKEY
+  and NSEC records.
+- `cmd/zonegitd/main.go` now resolves per-zone settings through
+  `daemonConfig.ruleFor(zone)` during reconciliation. The CLI
+  `--branch` / `--canary` / `--at` / `--canary-salt` flags are
+  preserved as the top-level config defaults.
+- Adds `gopkg.in/yaml.v3` as a direct dependency (it was already
+  present transitively); no other new deps.
+
+### Known limitations (intentionally deferred to v0.6)
+- DNSSEC signatures are placeholder bytes. Resolvers will not validate
+  them. Real Ed25519 / RSA / ECDSA signing requires KMS or
+  file-backed-key wiring on the write path — that's the v0.6
+  milestone.
+- The daemon doesn't reload the YAML config on SIGHUP yet. Restart
+  is required to pick up config edits; zone additions / removals are
+  picked up automatically by the existing reconciler.
+- IXFR finds the historical commit by walking first-parent only. A
+  zone with merge commits and a request against a serial that lived
+  on a merged-in branch (not first-parent) will fall back to AXFR.
+  Production deployments rarely encounter this pattern.
+
 ## [0.4.0] - 2026-05-23
 
 Multi-zone milestone. One repo can now hold many zones; one `zonegitd`

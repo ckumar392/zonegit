@@ -74,6 +74,7 @@ func main() {
 		newSignCommitCmd(),
 		newVerifyCmd(),
 		newZoneCmd(),
+		newSignZoneCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
