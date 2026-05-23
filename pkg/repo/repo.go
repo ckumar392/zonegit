@@ -544,7 +544,13 @@ func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	}
 	soaBlobHash, err := object.WalkTree(ctx, r.storage, parentTree, nil, "SOA")
 	if err != nil {
-		return nil
+		// No apex SOA in the parent yet (e.g. the user is editing a
+		// zone that doesn't have one). Silently skip — auto-bumping
+		// requires something to bump.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
 	}
 	obj, err := r.storage.GetObject(ctx, soaBlobHash)
 	if err != nil {

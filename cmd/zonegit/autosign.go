@@ -19,12 +19,12 @@ import (
 // staged a fresh RRSIG for owner X covering type T, we'd wipe out the
 // RRSIGs that cover X's other types. So this helper:
 //
-//   1. Groups touched RRs by (owner, rrtype).
-//   2. For each affected owner, loads the existing RRSIG RRset at HEAD.
-//   3. Drops any RRSIG whose TypeCovered matches one of the touched types
-//      (those are about to be re-signed).
-//   4. Appends a freshly-computed RRSIG for each touched (owner, type).
-//   5. Stages the merged RRSIG set per owner.
+//  1. Groups touched RRs by (owner, rrtype).
+//  2. For each affected owner, loads the existing RRSIG RRset at HEAD.
+//  3. Drops any RRSIG whose TypeCovered matches one of the touched types
+//     (those are about to be re-signed).
+//  4. Appends a freshly-computed RRSIG for each touched (owner, type).
+//  5. Stages the merged RRSIG set per owner.
 //
 // If the zone has no DNSSEC keys, this is a silent no-op — the caller
 // asked to auto-sign but nothing's configured, so we don't fail.

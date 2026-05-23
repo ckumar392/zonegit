@@ -56,11 +56,11 @@ type QueryContext struct {
 // Config configures a Resolver. Construct once at startup; the resolver
 // reads it read-only thereafter.
 type Config struct {
-	Zone           string     // lowercase FQDN with trailing dot
-	DefaultBranch  string     // branch served when Router is nil or returns ""
-	PinnedAt       store.Hash // non-zero => freeze to this commit (time-travel)
-	Router         Router     // optional canary routing
-	MetricsHook    MetricsHook
+	Zone          string     // lowercase FQDN with trailing dot
+	DefaultBranch string     // branch served when Router is nil or returns ""
+	PinnedAt      store.Hash // non-zero => freeze to this commit (time-travel)
+	Router        Router     // optional canary routing
+	MetricsHook   MetricsHook
 }
 
 // MetricsHook is called once per handled DNS query, after the response is
