@@ -13,6 +13,68 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.7.0] - 2026-05-23
+
+Integration + operational completeness. v0.7 closes the last credible
+SME objections from the v0.6 punch list: a real CoreDNS plugin (drop
+into your existing CoreDNS deployment), a DS-record helper (publish
+trust anchors to the parent zone), and auto-resigning on every commit
+that touches a signed RRset.
+
+### Added
+- **CoreDNS plugin** (`plugin/coredns/zonegit/`) — a real CoreDNS
+  plugin that wraps `pkg/resolve.Resolver`. Lives in its own Go module
+  so the (very large) CoreDNS dependency tree stays out of the main
+  zonegit module. Corefile syntax mirrors the `zonegitd` flag set:
+  ```
+  foo.com. {
+      zonegit /path/to/repo {
+          branch main
+          canary canary:20
+          at HEAD~5
+      }
+  }
+  ```
+  See [plugin/coredns/zonegit/README.md](plugin/coredns/zonegit/README.md).
+- **`cmd/coredns-with-zonegit/`** — a custom CoreDNS binary with the
+  plugin compiled in. Build via `make coredns`. Produces `bin/coredns`
+  (~99 MB) that's wire-compatible with stock CoreDNS for every
+  directive *and* speaks the new `zonegit` directive.
+- **`zonegit ds [zone]`** — prints the parent-zone DS record for a
+  zone's KSK (digest type 2, SHA-256). Operators paste the output into
+  their parent zone to complete the DNSSEC chain of trust.
+- **`zonegit set --auto-sign`** — when keys exist for the active zone,
+  re-signs the touched RRset in the *same commit* that mutates it.
+  The helper preserves RRSIGs covering untouched RRsets at the same
+  owner (since all RRSIGs at an owner share a single Rrtype=RRSIG
+  blob, naïve re-signing would have wiped them; auto-sign loads the
+  existing RRSIG set, drops only the ones being replaced, appends
+  fresh, and re-stages).
+
+### Changed
+- The demo grew from 21 steps to 24. New steps 21–23 walk through
+  `zonegit ds`, `set --auto-sign`, and a side-by-side dig comparison
+  of zonegitd and the new CoreDNS-with-zonegit binary serving the same
+  repo on different ports.
+- `Makefile` gains a `coredns` target. First run pulls in the CoreDNS
+  module graph (~5 min over a cold module cache); subsequent builds
+  use the Go module cache and finish in seconds.
+
+### Known limitations (deferred to v0.8)
+- **Pull replication** — the Merkle DAG makes "give me every reachable
+  object from `refs/heads/<zone>/<branch>` I don't already have"
+  almost trivial to implement; v0.8 will ship a gRPC streaming
+  protocol so a secondary `zonegitd` can mirror a primary continuously.
+- **NIOS integration bridge** — the Infoblox-specific connector that
+  watches NIOS zone changes and lands them as zonegit commits. The
+  single highest-leverage v0.8/v0.9 feature for an Infoblox SME
+  audience.
+- **CoreDNS plugin metrics** — currently emits CoreDNS's own
+  `coredns_*` metrics; zonegit's `zonegit_dns_queries_total` is only
+  populated when serving via `zonegitd`. A Corefile directive that
+  enables the resolver's `MetricsHook` against an exporter would close
+  the gap.
+
 ## [0.6.0] - 2026-05-23
 
 Real DNSSEC + operational completeness. v0.6 turns the v0.5 DNSSEC
