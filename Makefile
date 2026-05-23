@@ -1,4 +1,4 @@
-.PHONY: all build test test-race lint vet tidy clean demo bench cover help
+.PHONY: all build test test-race lint vet tidy clean demo bench cover coredns help
 
 GO         ?= go
 PKG        := ./...
@@ -41,6 +41,11 @@ tidy: ## go mod tidy
 
 demo: build ## End-to-end demo: import, commit, dig, edit, dig
 	./scripts/demo.sh
+
+coredns: ## Build a custom CoreDNS binary with the zonegit plugin (separate Go module; first build pulls in CoreDNS deps)
+	@mkdir -p $(BINDIR)
+	cd cmd/coredns-with-zonegit && $(GO) build -o ../../$(BINDIR)/coredns
+	@echo ">> built $(BINDIR)/coredns with zonegit plugin"
 
 clean: ## Remove build artifacts
 	rm -rf $(BINDIR) $(COVERAGE) /tmp/zonegit-demo
