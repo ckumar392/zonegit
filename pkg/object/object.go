@@ -16,12 +16,17 @@ const (
 	KindTree   Kind = "tree"
 	KindCommit Kind = "commit"
 	KindTag    Kind = "tag"
+	// KindSymref is the object kind for symbolic refs (HEAD). Payload is
+	// the raw UTF-8 target ref path (e.g. "refs/heads/foo.com./main").
+	// Stored via the object store so HEAD targets are not constrained by
+	// the 31-byte ref-value slot.
+	KindSymref Kind = "symref"
 )
 
-// IsValid reports whether k is one of the four canonical kinds.
+// IsValid reports whether k is one of the canonical kinds.
 func (k Kind) IsValid() bool {
 	switch k {
-	case KindBlob, KindTree, KindCommit, KindTag:
+	case KindBlob, KindTree, KindCommit, KindTag, KindSymref:
 		return true
 	}
 	return false

@@ -25,16 +25,30 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
 
+	"github.com/ckumar392/zonegit/pkg/refs"
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/resolve"
 	"github.com/ckumar392/zonegit/pkg/route"
 	"github.com/ckumar392/zonegit/pkg/store"
 )
+
+// canonZone lower-cases and ensures a trailing dot.
+func canonZone(z string) string {
+	z = strings.ToLower(z)
+	if z == "" {
+		return ""
+	}
+	if !strings.HasSuffix(z, ".") {
+		z += "."
+	}
+	return z
+}
 
 var (
 	version = "dev"
@@ -61,26 +75,26 @@ func main() {
 		return
 	}
 
-	// Resolve the zone: explicit flag wins; otherwise read from the repo.
-	zoneName := *zoneFlag
-	if zoneName == "" {
-		r, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
-		if err != nil {
-			fatal("open repo: %v", err)
-		}
-		zoneName = r.Zone()
-		_ = r.Close()
-		if zoneName == "" {
-			fatal("--zone is required (and no zone is persisted in the repo)")
-		}
+	// Initial zone enumeration. We need at least one zone present for the
+	// daemon to be useful; new zones added later are picked up by the
+	// background reconciler below.
+	probe, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
+	if err != nil {
+		fatal("open repo: %v", err)
 	}
-	if !strings.HasSuffix(zoneName, ".") {
-		zoneName += "."
+	startupZones, err := probe.Zones(context.Background())
+	if err != nil {
+		fatal("list zones: %v", err)
 	}
-	zoneName = strings.ToLower(zoneName)
+	_ = probe.Close()
+	if len(startupZones) == 0 {
+		fatal("repo has no registered zones; run `zonegit init <zone>` first")
+	}
 
-	// Determine which branches the snapshotter needs to watch.
-	watched := []string{*branch}
+	// Build the canary router once (shared across zones — the same
+	// branch:pct rule applies to every zone we serve). Zones that don't
+	// have the canary branch will fall back to the default branch via
+	// the resolver's lookup error path.
 	var router resolve.Router
 	if *canarySpec != "" {
 		br, err := route.NewBucketRouter(*branch, *canarySpec, *canarySalt)
@@ -88,16 +102,15 @@ func main() {
 			fatal("parse canary: %v", err)
 		}
 		router = br
-		watched = append(watched, br.CanaryBranch)
 	}
 
-	snap, err := resolve.NewPollingSnapshotter(*repoPath, watched, 200*time.Millisecond)
+	snap, err := resolve.NewPollingSnapshotter(*repoPath, nil, 200*time.Millisecond)
 	if err != nil {
 		fatal("snapshotter: %v", err)
 	}
 	defer snap.Close()
 
-	// Time-travel: resolve --at once at startup and pin the resolver to it.
+	// Time-travel pin: --at applies uniformly to all zones.
 	var pinned store.Hash
 	if *atRefish != "" {
 		probe, err := snap.Snapshot()
@@ -112,37 +125,116 @@ func main() {
 	}
 
 	metrics := resolve.NewMetrics()
-	if pinned.IsZero() {
-		if *canarySpec != "" {
-			metrics.SetActiveBranch(fmt.Sprintf("%s + %s", *branch, *canarySpec))
-		} else {
-			metrics.SetActiveBranch(*branch)
-		}
-	} else {
+	switch {
+	case !pinned.IsZero():
 		metrics.SetActiveBranch("pinned@" + pinned.Short())
+	case router != nil:
+		metrics.SetActiveBranch(fmt.Sprintf("%s + %s", *branch, *canarySpec))
+	default:
+		metrics.SetActiveBranch(*branch)
 	}
 
-	cfg := resolve.Config{
-		Zone:          zoneName,
-		DefaultBranch: *branch,
-		PinnedAt:      pinned,
-		Router:        router,
-		MetricsHook:   metrics,
-	}
-	r := resolve.New(snap, cfg)
+	// Build the reconciler that owns the dns.HandleFunc registrations and
+	// the snapshotter's watched-ref list. Called once at startup, then
+	// periodically so zones added at runtime (`zonegit zone add ...`) get
+	// picked up without restarting the daemon.
+	zoneFilter := canonZone(*zoneFlag) // "" → all zones
+	reconcileMu := &sync.Mutex{}
+	registered := map[string]bool{}
+	reconcile := func() {
+		// Open a fresh read-only repo every tick. We cannot reuse
+		// snap.Snapshot() here because the snapshotter's cached handle is
+		// only refreshed when a watched ref changes — and zone-marker refs
+		// are NOT watched (they don't affect query answers, only the set
+		// of zones to register handlers for). Opening fresh costs one
+		// Badger Open per second; acceptable for the discovery path.
+		rp, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
+		if err != nil {
+			return
+		}
+		defer rp.Close()
+		all, err := rp.Zones(context.Background())
+		if err != nil {
+			return
+		}
+		desired := all
+		if zoneFilter != "" {
+			desired = nil
+			for _, z := range all {
+				if z == zoneFilter {
+					desired = append(desired, z)
+				}
+			}
+		}
 
-	dns.HandleFunc(zoneName, r.HandleWithRemote)
+		reconcileMu.Lock()
+		defer reconcileMu.Unlock()
+
+		desiredSet := make(map[string]bool, len(desired))
+		for _, z := range desired {
+			desiredSet[z] = true
+		}
+		for _, z := range desired {
+			if registered[z] {
+				continue
+			}
+			cfg := resolve.Config{
+				Zone:          z,
+				DefaultBranch: *branch,
+				PinnedAt:      pinned,
+				Router:        router,
+				MetricsHook:   metrics,
+			}
+			r := resolve.New(snap, cfg)
+			dns.HandleFunc(z, r.HandleWithRemote)
+			registered[z] = true
+			log.Printf("zonegitd: registered zone %s", z)
+		}
+		for z := range registered {
+			if !desiredSet[z] {
+				dns.HandleRemove(z)
+				delete(registered, z)
+				log.Printf("zonegitd: unregistered zone %s (no longer in repo)", z)
+			}
+		}
+
+		refsToWatch := make([]string, 0, len(desired)*2)
+		for _, z := range desired {
+			refsToWatch = append(refsToWatch, refs.BranchRef(z, *branch))
+			if br, ok := router.(*route.BucketRouter); ok && router != nil {
+				refsToWatch = append(refsToWatch, refs.BranchRef(z, br.CanaryBranch))
+			}
+		}
+		snap.SetWatchedRefs(refsToWatch)
+	}
+
+	reconcile() // initial registration
+
+	stopReconciler := make(chan struct{})
+	go func() {
+		t := time.NewTicker(1 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopReconciler:
+				return
+			case <-t.C:
+				reconcile()
+			}
+		}
+	}()
+	defer close(stopReconciler)
 
 	udp := &dns.Server{Addr: *listen, Net: "udp"}
 	tcp := &dns.Server{Addr: *listen, Net: "tcp"}
 
 	switch {
 	case !pinned.IsZero():
-		log.Printf("zonegitd: serving zone %s from %s on %s (pinned at %s)", zoneName, *repoPath, *listen, pinned.Short())
+		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (pinned at %s)", len(startupZones), startupZones, *repoPath, *listen, pinned.Short())
 	case router != nil:
-		log.Printf("zonegitd: serving zone %s from %s on %s (default=%s, canary=%s)", zoneName, *repoPath, *listen, *branch, *canarySpec)
+		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (default=%s, canary=%s)", len(startupZones), startupZones, *repoPath, *listen, *branch, *canarySpec)
 	default:
-		log.Printf("zonegitd: serving zone %s from %s on %s (branch=%s)", zoneName, *repoPath, *listen, *branch)
+		log.Printf("zonegitd: serving %d zone(s) %v from %s on %s (branch=%s)", len(startupZones), startupZones, *repoPath, *listen, *branch)
 	}
 
 	go func() {

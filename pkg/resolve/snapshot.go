@@ -29,12 +29,20 @@ type Snapshotter interface {
 // The watcher runs in a background goroutine, polling at PollInterval
 // (default 200ms). On detected change it opens a fresh Repo, then atomically
 // swaps and closes the old one. Snapshot() never blocks on disk I/O.
+//
+// `refsToWatch` is a list of full ref paths (e.g. "refs/heads/foo.com./main").
+// Multi-zone daemons pass one entry per (zone, branch) pair they serve.
 type PollingSnapshotter struct {
 	path         string
-	branches     []string // branches whose hashes invalidate the cache
 	pollInterval time.Duration
 
 	cur atomic.Pointer[repo.Repo]
+
+	// refsMu guards the watched-ref list. SetWatchedRefs may be called
+	// from the daemon's zone-watcher goroutine concurrently with the
+	// snapshotter's own polling goroutine.
+	refsMu sync.RWMutex
+	refs   []string
 
 	// lastHashes tracks the hash we last saw for each watched ref. Mutated
 	// only by the watcher goroutine, so no lock is needed.
@@ -44,10 +52,28 @@ type PollingSnapshotter struct {
 	wg   sync.WaitGroup
 }
 
+// SetWatchedRefs replaces the list of refs whose hashes invalidate the
+// cached snapshot. Used when a new zone is registered at runtime so its
+// branches enter the watch set.
+func (p *PollingSnapshotter) SetWatchedRefs(refsToWatch []string) {
+	p.refsMu.Lock()
+	p.refs = append(p.refs[:0:0], refsToWatch...)
+	p.refsMu.Unlock()
+}
+
+// watchedRefs returns a copy of the current watch list. Cheap; called
+// once per tick.
+func (p *PollingSnapshotter) watchedRefs() []string {
+	p.refsMu.RLock()
+	out := append([]string(nil), p.refs...)
+	p.refsMu.RUnlock()
+	return out
+}
+
 // NewPollingSnapshotter opens an initial read-only handle and starts the
-// watcher. branches must include every branch the resolver might serve
-// (default branch + canary branch, if any).
-func NewPollingSnapshotter(path string, branches []string, pollInterval time.Duration) (*PollingSnapshotter, error) {
+// watcher. refsToWatch must include every ref the resolver might serve
+// from (default + canary branches across every zone).
+func NewPollingSnapshotter(path string, refsToWatch []string, pollInterval time.Duration) (*PollingSnapshotter, error) {
 	if pollInterval <= 0 {
 		pollInterval = 200 * time.Millisecond
 	}
@@ -57,7 +83,7 @@ func NewPollingSnapshotter(path string, branches []string, pollInterval time.Dur
 	}
 	ps := &PollingSnapshotter{
 		path:         path,
-		branches:     branches,
+		refs:         append([]string(nil), refsToWatch...),
 		pollInterval: pollInterval,
 		lastHashes:   make(map[string]store.Hash),
 		stop:         make(chan struct{}),
@@ -119,15 +145,16 @@ func (p *PollingSnapshotter) tick() {
 		return
 	}
 	ctx := context.Background()
+	watched := p.watchedRefs()
 	changed := false
-	freshHashes := make(map[string]store.Hash, len(p.branches))
-	for _, b := range p.branches {
-		h, err := fresh.Refs().GetBranch(ctx, b)
-		if err != nil {
+	freshHashes := make(map[string]store.Hash, len(watched))
+	for _, ref := range watched {
+		h, ok, err := fresh.Storage().GetRef(ctx, ref)
+		if err != nil || !ok {
 			h = store.ZeroHash
 		}
-		freshHashes[b] = h
-		if p.lastHashes[b] != h {
+		freshHashes[ref] = h
+		if p.lastHashes[ref] != h {
 			changed = true
 		}
 	}
@@ -144,11 +171,11 @@ func (p *PollingSnapshotter) tick() {
 
 func (p *PollingSnapshotter) captureHashes(r *repo.Repo) {
 	ctx := context.Background()
-	for _, b := range p.branches {
-		h, err := r.Refs().GetBranch(ctx, b)
-		if err != nil {
+	for _, ref := range p.watchedRefs() {
+		h, ok, err := r.Storage().GetRef(ctx, ref)
+		if err != nil || !ok {
 			h = store.ZeroHash
 		}
-		p.lastHashes[b] = h
+		p.lastHashes[ref] = h
 	}
 }

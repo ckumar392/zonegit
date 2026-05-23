@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ckumar392/zonegit/pkg/object"
-	"github.com/ckumar392/zonegit/pkg/refs"
 	"github.com/ckumar392/zonegit/pkg/repo"
 )
 
@@ -20,11 +19,11 @@ import (
 // the "[<branch> <hash>] message" commit summary line so the demo output
 // matches the branch the user is actually on.
 func currentBranch(r *repo.Repo) string {
-	branch, _, err := r.Refs().ReadHEAD(context.Background())
+	_, branch, _, err := r.Refs().ReadHEAD(context.Background())
 	if err != nil {
 		return "(unknown)"
 	}
-	return strings.TrimPrefix(branch, refs.BranchPrefix)
+	return branch
 }
 
 // Globals populated from --repo / ZONEGIT_REPO.
@@ -74,6 +73,7 @@ func main() {
 		newKeygenCmd(),
 		newSignCommitCmd(),
 		newVerifyCmd(),
+		newZoneCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -94,8 +94,51 @@ func openRepo() (*repo.Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open repo %s: %w", flagRepoPath, err)
 	}
+	// --zone, when given, switches HEAD to that zone's current branch (or
+	// the default branch if no branch is in HEAD yet). The switch is
+	// transient for the duration of the process — the next CLI invocation
+	// sees whatever HEAD landed at.
 	if flagZone != "" {
-		r.SetZone(flagZone)
+		ctx := context.Background()
+		registered, err := r.Refs().IsZoneRegistered(ctx, flagZone)
+		if err != nil {
+			_ = r.Close()
+			return nil, err
+		}
+		if !registered {
+			_ = r.Close()
+			return nil, fmt.Errorf("--zone %q is not registered; use `zonegit zone add %s` first", flagZone, flagZone)
+		}
+		// Pick the current branch in the target zone if HEAD already names one,
+		// otherwise fall back to "main".
+		branch := repo.DefaultBranch
+		branches, _ := r.Refs().ListBranches(ctx, flagZone)
+		if len(branches) > 0 {
+			// Prefer "main" if present, else the first listed branch.
+			for _, b := range branches {
+				if b == repo.DefaultBranch {
+					branch = b
+					break
+				}
+			}
+			if branch == repo.DefaultBranch {
+				// confirm "main" actually exists; otherwise pick first
+				found := false
+				for _, b := range branches {
+					if b == repo.DefaultBranch {
+						found = true
+						break
+					}
+				}
+				if !found {
+					branch = branches[0]
+				}
+			}
+		}
+		if err := r.SwitchZone(ctx, flagZone, branch); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
 	}
 	return r, nil
 }
@@ -151,7 +194,7 @@ func newImportCmd() *cobra.Command {
 				return err
 			}
 			defer r.Close()
-			if r.Zone() == "" {
+			if r.ActiveZone() == "" {
 				return fmt.Errorf("zone not set; pass --zone or run 'zonegit init' first")
 			}
 			f, err := os.Open(args[0])
@@ -237,7 +280,7 @@ func newDeleteCmd() *cobra.Command {
 				return err
 			}
 			defer r.Close()
-			fqdn := stripZone(args[0], r.Zone())
+			fqdn := stripZone(args[0], r.ActiveZone())
 			r.Delete(fqdn, args[1])
 			if msg == "" {
 				msg = fmt.Sprintf("delete %s %s", args[0], strings.ToUpper(args[1]))
@@ -337,7 +380,7 @@ func newBlameCmd() *cobra.Command {
 				return err
 			}
 			defer r.Close()
-			fqdn := stripZone(args[0], r.Zone())
+			fqdn := stripZone(args[0], r.ActiveZone())
 			info, err := r.Blame(context.Background(), fqdn, args[1])
 			if err != nil {
 				return err
@@ -377,7 +420,7 @@ func newShowCmd() *cobra.Command {
 				}
 				commit = h
 			}
-			fqdn := stripZone(args[0], r.Zone())
+			fqdn := stripZone(args[0], r.ActiveZone())
 			rs, err := r.Lookup(ctx, commit, fqdn, args[1])
 			if err != nil {
 				return err
@@ -401,13 +444,13 @@ func newStatusCmd() *cobra.Command {
 			}
 			defer r.Close()
 			ctx := context.Background()
-			branch, head, err := r.Head(ctx)
+			zoneName, branch, head, err := r.Head(ctx)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("repo:   %s\n", flagRepoPath)
-			fmt.Printf("zone:   %s\n", r.Zone())
-			fmt.Printf("branch: %s\n", strings.TrimPrefix(branch, "refs/heads/"))
+			fmt.Printf("zone:   %s\n", zoneName)
+			fmt.Printf("branch: %s\n", branch)
 			if head.IsZero() {
 				fmt.Println("HEAD:   (empty)")
 			} else {
@@ -430,14 +473,16 @@ func newBranchCmd() *cobra.Command {
 			}
 			defer r.Close()
 			ctx := context.Background()
+			zoneName, curName, _, err := r.Head(ctx)
+			if err != nil {
+				return fmt.Errorf("branch: read HEAD: %w", err)
+			}
 			switch len(args) {
 			case 0:
-				names, err := r.Refs().ListBranches(ctx)
+				names, err := r.Refs().ListBranches(ctx, zoneName)
 				if err != nil {
 					return err
 				}
-				curBranch, _, _ := r.Head(ctx)
-				curName := strings.TrimPrefix(curBranch, "refs/heads/")
 				for _, n := range names {
 					mark := "  "
 					if n == curName {
@@ -454,7 +499,7 @@ func newBranchCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return r.Refs().CreateBranch(ctx, args[0], h)
+				return r.Refs().CreateBranch(ctx, zoneName, args[0], h)
 			}
 			return nil
 		},
@@ -465,7 +510,7 @@ func newBranchCmd() *cobra.Command {
 func newCheckoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "checkout <branch>",
-		Short: "Switch HEAD to another branch",
+		Short: "Switch HEAD to another branch (within the active zone)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
@@ -473,7 +518,12 @@ func newCheckoutCmd() *cobra.Command {
 				return err
 			}
 			defer r.Close()
-			return r.Refs().SetHEAD(context.Background(), "refs/heads/"+args[0])
+			ctx := context.Background()
+			zoneName, _, _, err := r.Head(ctx)
+			if err != nil {
+				return fmt.Errorf("checkout: read HEAD: %w", err)
+			}
+			return r.SwitchZone(ctx, zoneName, args[0])
 		},
 	}
 }
