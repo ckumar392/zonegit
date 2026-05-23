@@ -3,78 +3,137 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
 
+	"github.com/ckumar392/zonegit/pkg/dnssec"
 	"github.com/ckumar392/zonegit/pkg/object"
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/store"
-	"github.com/ckumar392/zonegit/pkg/zone"
 )
 
-// newSignZoneCmd implements `zonegit sign-zone --dry-run`.
+// keysDir returns the directory where DNSSEC keys for this repo live.
+// Default: <repo>/keys/. The directory is created on first use.
+func keysDir() string { return filepath.Join(flagRepoPath, "keys") }
+
+// newZoneKeygenCmd implements `zonegit zone-keygen [zone]`.
 //
-// What this v0.5 milestone does:
-//   - enumerates every RRset at HEAD
-//   - generates an NSEC chain over the canonical sort of owner names
-//   - generates placeholder DNSKEY records at the apex (KSK + ZSK)
-//   - generates placeholder RRSIG records (one per RRset) with empty
-//     signatures
-//   - commits all of these in a single commit on the active branch
+// Generates a fresh Ed25519 KSK + ZSK and writes them under
+// <repo>/keys/<zone>.{ksk,zsk}.{key,pub}. Without an argument, it uses
+// the active zone.
+func newZoneKeygenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "zone-keygen [zone]",
+		Short: "Generate a DNSSEC keypair (KSK + ZSK, Ed25519) for a zone",
+		Args:  cobra.MaximumNArgs(1),
+		Example: "  zonegit zone-keygen foo.com.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := openRepo()
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+			z := r.ActiveZone()
+			if len(args) == 1 {
+				z = args[0]
+			}
+			if z == "" {
+				return fmt.Errorf("zone-keygen: no zone (active zone is empty; pass one explicitly)")
+			}
+			if dnssec.HasKeys(keysDir(), z) {
+				return fmt.Errorf("zone-keygen: keys already exist for %s (delete them manually to regenerate)", z)
+			}
+			zk, err := dnssec.Generate()
+			if err != nil {
+				return err
+			}
+			if err := zk.WriteToDir(keysDir(), z); err != nil {
+				return err
+			}
+			fmt.Printf("generated KSK + ZSK for %s in %s\n", z, keysDir())
+			return nil
+		},
+	}
+}
+
+// newSignZoneCmd implements `zonegit sign-zone [--dry-run]`.
 //
-// What it does *not* do:
-//   - actually compute cryptographic signatures
-//   - validate against DNSSEC root trust anchors
-//   - rotate keys
-//
-// The placeholders prove that DNSSEC records flow through the object
-// model, the daemon's resolve path, and AXFR — without requiring a v0.6
-// crypto implementation up front. A subsequent milestone replaces the
-// empty Signature bytes with real Ed25519 / RSA / ECDSA output and adds
-// key management.
+// Default behaviour (no --dry-run): loads the zone's KSK + ZSK from
+// <repo>/keys/ and emits real RRSIGs that resolvers will validate.
+// Falls back to placeholder mode automatically if no keys are present
+// and --dry-run is set.
 func newSignZoneCmd() *cobra.Command {
 	var dryRun bool
+	var ttl uint32
+	var validityDays uint32
 	cmd := &cobra.Command{
 		Use:   "sign-zone",
-		Short: "Stage DNSSEC scaffolding (NSEC chain + DNSKEY + RRSIG placeholders) on the active branch",
-		Long: `Stage a DNSSEC scaffold for the active zone.
+		Short: "Stage DNSSEC records (DNSKEY + RRSIG over every RRset + NSEC chain) on the active branch",
+		Long: `Stage a DNSSEC-signed view of the active zone.
 
-v0.5 supports --dry-run only: signatures are placeholder bytes. The
-records are DNSSEC-shaped and queryable via dig, but resolvers will
-reject the signatures as invalid. v0.6 adds real signing.`,
-		Example: "  zonegit sign-zone --dry-run -m 'add DNSSEC scaffold'",
+Without --dry-run: loads the zone's KSK and ZSK from <repo>/keys/ and
+emits real RRSIGs that resolvers will validate end-to-end. Run
+zone-keygen first.
+
+With --dry-run: emits placeholder signatures (zero crypto). Useful for
+demos and tests that don't want to roll keys.`,
+		Example: "  zonegit zone-keygen foo.com.\n  zonegit sign-zone -m 'add DNSSEC'",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !dryRun {
-				return fmt.Errorf("only --dry-run is supported in v0.5; live signing is a v0.6 milestone")
-			}
 			r, err := openRepo()
 			if err != nil {
 				return err
 			}
 			defer r.Close()
 			ctx := context.Background()
-			if err := stageDNSSECScaffold(ctx, r); err != nil {
+
+			zname := r.ActiveZone()
+			if zname == "" {
+				return fmt.Errorf("sign-zone: no active zone")
+			}
+
+			var keys *dnssec.ZoneKeys
+			if !dryRun {
+				if !dnssec.HasKeys(keysDir(), zname) {
+					return fmt.Errorf("sign-zone: no DNSSEC keys for %s in %s. Run `zonegit zone-keygen %s` first, or pass --dry-run for unsigned placeholders", zname, keysDir(), zname)
+				}
+				keys, err = dnssec.LoadFromDir(keysDir(), zname)
+				if err != nil {
+					return fmt.Errorf("sign-zone: load keys: %w", err)
+				}
+			}
+
+			if err := stageDNSSECScaffold(ctx, r, keys, ttl, validityDays); err != nil {
 				return err
 			}
-			h, err := r.Commit(ctx, authorIdentity(), "DNSSEC scaffold (dry-run, unsigned)")
+			msg := "DNSSEC signed"
+			if dryRun {
+				msg = "DNSSEC scaffold (dry-run, unsigned)"
+			}
+			h, err := r.Commit(ctx, authorIdentity(), msg)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[%s %s] DNSSEC scaffold (dry-run, unsigned)\n", currentBranch(r), h.Short())
+			fmt.Printf("[%s %s] %s\n", currentBranch(r), h.Short(), msg)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "emit NSEC/DNSKEY/RRSIG records with placeholder signatures (required for v0.5)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "emit placeholder signatures instead of real ones (no keys required)")
+	cmd.Flags().Uint32Var(&ttl, "ttl", 300, "TTL for DNSKEY / NSEC records")
+	cmd.Flags().Uint32Var(&validityDays, "validity-days", 30, "RRSIG validity window in days")
 	return cmd
 }
 
-// stageDNSSECScaffold walks the current HEAD tree, gathers every
-// (owner, []RRType), and stages NSEC + DNSKEY + RRSIG additions for one
-// commit's worth of edits.
-func stageDNSSECScaffold(ctx context.Context, r *repo.Repo) error {
+// stageDNSSECScaffold walks HEAD's tree, collects every (owner, []rrtype),
+// and stages DNSKEY + RRSIGs + NSEC chain in the repo's staging area.
+//
+// When keys is nil, signatures are placeholder bytes (dry-run mode).
+// When keys is non-nil, RRSIGs carry real Ed25519 signatures produced
+// by miekg/dns's RRSIG.Sign.
+func stageDNSSECScaffold(ctx context.Context, r *repo.Repo, keys *dnssec.ZoneKeys, ttl uint32, validityDays uint32) error {
 	zoneName := r.ActiveZone()
 	if zoneName == "" {
 		return fmt.Errorf("sign-zone: no active zone")
@@ -91,11 +150,21 @@ func stageDNSSECScaffold(ctx context.Context, r *repo.Repo) error {
 		return fmt.Errorf("sign-zone: HEAD has no tree")
 	}
 
-	// Collect owner → types[] across the entire zone.
-	owners := map[string][]string{}
-	err = object.WalkAllLeaves(ctx, r.Storage(), headTree, func(path []string, rrtype string, _ store.Hash) error {
+	// Collect owner → []rrtype across the entire zone, and remember which
+	// blob each (owner, rrtype) pair points at so we can re-load the
+	// RRset to sign it.
+	type ownerEntry struct {
+		types map[string]store.Hash
+	}
+	owners := map[string]*ownerEntry{}
+	err = object.WalkAllLeaves(ctx, r.Storage(), headTree, func(path []string, rrtype string, blobHash store.Hash) error {
 		owner := ownerFQDN(zoneName, path)
-		owners[owner] = append(owners[owner], rrtype)
+		e, ok := owners[owner]
+		if !ok {
+			e = &ownerEntry{types: map[string]store.Hash{}}
+			owners[owner] = e
+		}
+		e.types[rrtype] = blobHash
 		return nil
 	})
 	if err != nil {
@@ -105,108 +174,140 @@ func stageDNSSECScaffold(ctx context.Context, r *repo.Repo) error {
 		return fmt.Errorf("sign-zone: zone is empty")
 	}
 
-	// 1) DNSKEY at apex (KSK + ZSK, placeholder material).
-	ksk, zsk := placeholderDNSKEYs(zoneName)
-	if err := r.Set(ctx, []dns.RR{ksk, zsk}); err != nil {
+	// 1) Stage the DNSKEY RRset at the apex.
+	var ksk, zsk *dns.DNSKEY
+	if keys != nil {
+		ksk, zsk = keys.DNSKEYs(zoneName, ttl)
+	} else {
+		ksk, zsk = placeholderDNSKEYs(zoneName, ttl)
+	}
+	dnskeySet := []dns.RR{ksk, zsk}
+	if err := r.Set(ctx, dnskeySet); err != nil {
 		return fmt.Errorf("sign-zone: stage DNSKEY: %w", err)
 	}
-	owners[zoneName] = append(owners[zoneName], "DNSKEY")
+	if owners[zoneName] == nil {
+		owners[zoneName] = &ownerEntry{types: map[string]store.Hash{}}
+	}
+	owners[zoneName].types["DNSKEY"] = store.ZeroHash // marker (we just staged it)
 
-	// 2) NSEC chain over the sorted owner names. Each NSEC also covers
-	// itself and the RRSIG type that will be generated below, so we add
-	// "NSEC" and "RRSIG" to every name's type set.
+	// 2) NSEC chain — alphabetical, wrap-around. Each NSEC also covers
+	// itself and RRSIG (added below), so include those in the bitmap.
 	names := make([]string, 0, len(owners))
 	for n := range owners {
-		owners[n] = append(owners[n], "NSEC", "RRSIG")
 		names = append(names, n)
 	}
 	sort.Strings(names)
 
+	// Stage NSEC records.
 	for i, owner := range names {
 		next := names[(i+1)%len(names)]
-		// Sort + dedup the type bitmap (canonical order).
-		typesUniq := uniqStrings(owners[owner])
-		bitmap := make([]uint16, 0, len(typesUniq))
-		for _, t := range typesUniq {
-			if t == "" {
-				continue
-			}
-			if code, ok := dns.StringToType[t]; ok {
-				bitmap = append(bitmap, code)
-			}
+		types := make([]string, 0, len(owners[owner].types)+2)
+		for t := range owners[owner].types {
+			types = append(types, t)
 		}
-		sort.Slice(bitmap, func(i, j int) bool { return bitmap[i] < bitmap[j] })
+		types = append(types, "NSEC", "RRSIG")
+		types = uniqStrings(types)
+		bitmap := typesToBitmap(types)
 		nsec := &dns.NSEC{
-			Hdr: dns.RR_Header{
-				Name:   owner,
-				Rrtype: dns.TypeNSEC,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
+			Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: ttl},
 			NextDomain: next,
 			TypeBitMap: bitmap,
 		}
 		if err := r.Set(ctx, []dns.RR{nsec}); err != nil {
 			return fmt.Errorf("sign-zone: stage NSEC %s: %w", owner, err)
 		}
+		owners[owner].types["NSEC"] = store.ZeroHash
 	}
 
-	// 3) RRSIG per RRset. We must look up the actual RRsets to learn
-	// their TTLs (RRSIG.OrigTtl mirrors the covered RRset's TTL).
+	// 3) RRSIG per RRset, batched per owner.
+	//
+	// Multiple RRsets at the same owner each produce one RRSIG. They all
+	// share Rrtype=RRSIG so they must be stored together as one RRset
+	// in the object model — otherwise each Set() would overwrite the
+	// previous one at that owner.
 	inception := uint32(time.Now().Unix())
-	expiration := inception + 30*24*3600 // 30-day placeholder validity
-	for owner, types := range owners {
-		for _, t := range types {
-			if t == "NSEC" || t == "RRSIG" || t == "DNSKEY" {
-				// Always sign these too.
+	expiration := inception + validityDays*24*3600
+	ownerSigs := map[string][]dns.RR{}
+	for owner, e := range owners {
+		for t := range e.types {
+			if t == "RRSIG" {
+				continue
 			}
-			rsKey := stripZoneOwner(owner, zoneName)
-			covered, err := r.Lookup(ctx, head, rsKey, t)
-			if err != nil {
-				// The DNSKEY/NSEC/RRSIG we just staged aren't in HEAD's
-				// tree yet (they're in staging). Sign them via reasonable
-				// defaults — TTL 300, the typical zonefile default.
-				covered = zone.RRset{TTL: 300}
+			var coveredRRs []dns.RR
+			if t == "DNSKEY" {
+				coveredRRs = dnskeySet
+			} else if t == "NSEC" {
+				idx := sort.SearchStrings(names, owner)
+				next := names[(idx+1)%len(names)]
+				types := []string{}
+				for tt := range e.types {
+					types = append(types, tt)
+				}
+				types = uniqStrings(append(types, "NSEC", "RRSIG"))
+				coveredRRs = []dns.RR{&dns.NSEC{
+					Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: ttl},
+					NextDomain: next,
+					TypeBitMap: typesToBitmap(types),
+				}}
+			} else {
+				rsKey := stripZoneOwner(owner, zoneName)
+				rs, err := r.Lookup(ctx, head, rsKey, t)
+				if err != nil {
+					return fmt.Errorf("sign-zone: lookup %s %s: %w", owner, t, err)
+				}
+				coveredRRs = rs.RRs
 			}
-			rrsig := placeholderRRSIG(owner, t, zoneName, covered.TTL, inception, expiration)
-			if err := r.Set(ctx, []dns.RR{rrsig}); err != nil {
-				return fmt.Errorf("sign-zone: stage RRSIG %s %s: %w", owner, t, err)
+
+			var rrsig *dns.RRSIG
+			if keys != nil {
+				// KSK signs DNSKEY only; ZSK signs everything else.
+				isKSK := t == "DNSKEY"
+				signer := keys.ZSK
+				if isKSK {
+					signer = keys.KSK
+				}
+				rrsig, err = dnssec.SignRRset(coveredRRs, zoneName, signer, isKSK, inception, expiration)
+				if err != nil {
+					return fmt.Errorf("sign-zone: sign %s %s: %w", owner, t, err)
+				}
+			} else {
+				rrsig = placeholderRRSIG(owner, t, zoneName, coveredRRs[0].Header().Ttl, inception, expiration)
 			}
+			ownerSigs[owner] = append(ownerSigs[owner], rrsig)
+		}
+	}
+	for owner, sigs := range ownerSigs {
+		if len(sigs) == 0 {
+			continue
+		}
+		// All RRSIGs at an owner share owner/class/type and TTL (we set
+		// them all to the same TTL above). EncodeRRset enforces that.
+		// Normalise TTLs to the first one's value to satisfy the
+		// homogeneity check.
+		baseTTL := sigs[0].Header().Ttl
+		for _, s := range sigs {
+			s.Header().Ttl = baseTTL
+		}
+		if err := r.Set(ctx, sigs); err != nil {
+			return fmt.Errorf("sign-zone: stage RRSIG batch for %s: %w", owner, err)
 		}
 	}
 	return nil
 }
 
-// placeholderDNSKEYs returns a KSK and ZSK with non-cryptographic key
-// material. Algorithm 8 (RSA-SHA256) is chosen because it's the most
-// common algorithm secondaries recognize without complaining about
-// unknown codes; the actual key bytes are placeholder data and will not
-// validate signatures. v0.6 replaces these with real keypair output.
-func placeholderDNSKEYs(zoneName string) (ksk, zsk *dns.DNSKEY) {
+// placeholderDNSKEYs returns base64-clean placeholder DNSKEYs for
+// --dry-run mode (no real crypto).
+func placeholderDNSKEYs(zoneName string, ttl uint32) (ksk, zsk *dns.DNSKEY) {
 	ksk = &dns.DNSKEY{
-		Hdr: dns.RR_Header{
-			Name:   zoneName,
-			Rrtype: dns.TypeDNSKEY,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		Flags:     257, // KSK (256 = ZSK)
+		Hdr:       dns.RR_Header{Name: zoneName, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: ttl},
+		Flags:     257,
 		Protocol:  3,
 		Algorithm: dns.RSASHA256,
-		// Placeholder base64. miekg/dns parses PublicKey as base64; we
-		// pick a 52-char base64-clean string so it decodes cleanly. The
-		// resulting bytes are not a real RSA key — they won't validate
-		// against any signature. v0.6 replaces with real KSK material.
 		PublicKey: "AwEAAcUlFV1vhmqx6NSOUOJgPLkNgmpC0c8oXdSnPp9LpvWPdcA3",
 	}
 	zsk = &dns.DNSKEY{
-		Hdr: dns.RR_Header{
-			Name:   zoneName,
-			Rrtype: dns.TypeDNSKEY,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		Flags:     256, // ZSK
+		Hdr:       dns.RR_Header{Name: zoneName, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: ttl},
+		Flags:     256,
 		Protocol:  3,
 		Algorithm: dns.RSASHA256,
 		PublicKey: "AwEAAdVlGW2whnrx7OTPVPKhQMlOhnqD1d9pYeTpQq+MqwXQecB4",
@@ -214,38 +315,43 @@ func placeholderDNSKEYs(zoneName string) (ksk, zsk *dns.DNSKEY) {
 	return
 }
 
-// placeholderRRSIG returns an RRSIG with empty signature bytes,
-// covering the given (owner, type). Validity period is 30 days from now.
+// placeholderRRSIG returns an RRSIG with empty signature bytes for
+// --dry-run mode.
 func placeholderRRSIG(owner, covered, zoneName string, origTTL, inception, expiration uint32) *dns.RRSIG {
 	if origTTL == 0 {
 		origTTL = 300
 	}
-	coveredCode := dns.StringToType[covered]
 	return &dns.RRSIG{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeRRSIG,
-			Class:  dns.ClassINET,
-			Ttl:    origTTL,
-		},
-		TypeCovered: coveredCode,
+		Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: origTTL},
+		TypeCovered: dns.StringToType[covered],
 		Algorithm:   dns.RSASHA256,
-		Labels:      uint8(countLabels(owner)),
+		Labels:      uint8(dns.CountLabel(owner)),
 		OrigTtl:     origTTL,
 		Expiration:  expiration,
 		Inception:   inception,
 		KeyTag:      0,
 		SignerName:  zoneName,
-		Signature:   "AAAA", // placeholder — v0.6 replaces with real bytes
+		Signature:   "AAAA",
 	}
+}
+
+func typesToBitmap(types []string) []uint16 {
+	out := make([]uint16, 0, len(types))
+	seen := map[uint16]bool{}
+	for _, t := range types {
+		if code, ok := dns.StringToType[t]; ok && !seen[code] {
+			out = append(out, code)
+			seen[code] = true
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func ownerFQDN(zoneName string, path []string) string {
 	if len(path) == 0 {
 		return zoneName
 	}
-	// path is [zone-down], with last element being the deepest label.
-	// Reverse + join + zone suffix.
 	out := ""
 	for i := len(path) - 1; i >= 0; i-- {
 		if out == "" {
@@ -257,8 +363,6 @@ func ownerFQDN(zoneName string, path []string) string {
 	return out + "." + zoneName
 }
 
-// stripZoneOwner turns "api.foo.com." into "api" given zone "foo.com.";
-// the apex becomes "@" (Repo.Set normalises that back to "").
 func stripZoneOwner(owner, zoneName string) string {
 	if owner == zoneName {
 		return "@"
@@ -267,26 +371,6 @@ func stripZoneOwner(owner, zoneName string) string {
 		return owner[:len(owner)-len(zoneName)-1]
 	}
 	return owner
-}
-
-// countLabels returns the number of non-empty labels in an FQDN, used
-// for RRSIG.Labels per RFC 4034.
-func countLabels(name string) int {
-	if name == "" || name == "." {
-		return 0
-	}
-	n := 0
-	for _, b := range name {
-		if b == '.' {
-			n++
-		}
-	}
-	// trailing dot is counted as a separator only — if the name ends
-	// with ".", we've over-counted by one.
-	if len(name) > 0 && name[len(name)-1] == '.' {
-		return n
-	}
-	return n + 1
 }
 
 func uniqStrings(in []string) []string {
@@ -304,8 +388,6 @@ func uniqStrings(in []string) []string {
 	return out
 }
 
-// treeOfCommit returns the tree hash inside the commit at h, or
-// ZeroHash on error.
 func treeOfCommit(ctx context.Context, s store.Storage, h store.Hash) store.Hash {
 	if h.IsZero() {
 		return store.ZeroHash
@@ -320,3 +402,4 @@ func treeOfCommit(ctx context.Context, s store.Storage, h store.Hash) store.Hash
 	}
 	return c.Tree
 }
+

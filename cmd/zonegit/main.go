@@ -75,6 +75,7 @@ func main() {
 		newVerifyCmd(),
 		newZoneCmd(),
 		newSignZoneCmd(),
+		newZoneKeygenCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
