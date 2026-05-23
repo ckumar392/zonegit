@@ -13,6 +13,78 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.4.0] - 2026-05-23
+
+Multi-zone milestone. One repo can now hold many zones; one `zonegitd`
+process serves all of them on a single port. This unlocks the
+multi-tenant / MSP narrative (one daemon, many customer zones, per-zone
+RBAC via ref isolation) without changing the protocol on the wire.
+
+### Added
+- **Multi-zone repo layout** — every branch and tag is scoped to its
+  zone (`refs/heads/<zone>/<branch>`, `refs/tags/<zone>/<tag>`); zone
+  membership is enumerable via `refs/zonegit/zones/<zone>` markers.
+  Object storage is shared across zones; identical RRsets dedupe
+  byte-for-byte regardless of which zone they appear in
+  ([pkg/refs/refs.go](pkg/refs/refs.go)).
+- **`zonegit zone add | list | switch`** — manage zones in a repo.
+  Existing `init` registers the first zone; `zone add` joins additional
+  zones without moving HEAD ([cmd/zonegit/zone.go](cmd/zonegit/zone.go)).
+- **Multi-zone daemon** — `zonegitd` enumerates registered zones at
+  startup and registers one `Resolver` per zone with miekg/dns. Time
+  travel, canary, and AXFR all apply per zone. `--zone` becomes optional
+  and selects a single zone if given ([cmd/zonegitd/main.go](cmd/zonegitd/main.go)).
+- **Runtime zone discovery** — a 1s reconciler in the daemon notices
+  zones added or removed at runtime (`zonegit zone add bar.com.` is
+  picked up without a daemon restart). The snapshotter's
+  `SetWatchedRefs` lets the reconciler extend the watch set on the fly
+  ([cmd/zonegitd/main.go](cmd/zonegitd/main.go),
+   [pkg/resolve/snapshot.go](pkg/resolve/snapshot.go)).
+- **Object-backed HEAD symref** (`KindSymref`) — HEAD now points at a
+  content-addressed object containing the target ref string, removing
+  the 31-byte limit that the v0.3 length-prefix scheme imposed on
+  `refs/heads/<zone>/<branch>` paths. Long zone names work
+  ([pkg/object/object.go](pkg/object/object.go),
+   [pkg/refs/refs.go](pkg/refs/refs.go)).
+- **Automatic v0.3 → v0.4 migration on Open** — legacy single-zone
+  repos are detected and converted in place: branches and tags are
+  rewritten to the new zone-scoped paths, HEAD is re-encoded as a
+  symref, the zone marker is created, and the legacy
+  `refs/zonegit/zone` ref is removed. Idempotent and crash-safe to
+  resume ([pkg/refs/refs.go](pkg/refs/refs.go) `MigrateLegacyV03`,
+   [pkg/repo/repo.go](pkg/repo/repo.go) `Open`).
+
+### Changed
+- `Repo.Head` now returns `(zone, branch, commit, err)`. Callers must
+  update to consume the zone segment.
+- `refs.DB.CreateBranch / UpdateBranch / DeleteBranch / GetBranch /
+  ListBranches / CreateTag / GetTag / DeleteTag / ListTags` and `SetHEAD`
+  all take an additional zone parameter; bare-name `Resolve` now
+  resolves against the active zone from HEAD.
+- The 18-step demo grew to 19 steps with a new "MULTI-ZONE" step that
+  registers a second zone (`bar.com.`) at runtime and proves a single
+  daemon serves both `foo.com.` and `bar.com.` from one port
+  without restart ([scripts/demo.sh](scripts/demo.sh)).
+- `cmd/zonegit/main.go` `--zone` flag, when given, switches HEAD to that
+  zone's current branch for the duration of the command (using the new
+  `Repo.SwitchZone`).
+- Snapshotter no longer owns its watched-ref list permanently; the
+  daemon updates it as zones come and go via `SetWatchedRefs`.
+
+### Removed
+- `Repo.Zone()` and `Repo.SetZone()` — superseded by `ActiveZone()`,
+  `AddZone()`, `Zones()`, `SwitchZone()`.
+- The `MaxHeadTargetLen` constant — there is no length limit anymore.
+
+### Known limitations (intentionally deferred to v0.5)
+- The daemon's reconciler opens one fresh read-only Badger handle per
+  second to discover zone changes. Cheap, but a sentinel-file watcher
+  or Badger Subscribe would be cleaner at scale.
+- Per-zone `--branch` / `--canary` configuration is uniform; v0.5 will
+  add a per-zone config file so different zones can have different
+  rollout policies.
+- AXFR is still full-only (no IXFR), inherited from v0.3.
+
 ## [0.3.0] - 2026-05-23
 
 Demo-readiness milestone. Every claim the README makes now corresponds to

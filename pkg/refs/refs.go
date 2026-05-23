@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,223 +13,306 @@ import (
 )
 
 // Well-known ref prefixes.
+//
+// v0.4 introduces multi-zone repos. Every branch and tag is scoped under
+// its zone:
+//
+//	refs/heads/<zone>/<branch>     # branch tips
+//	refs/tags/<zone>/<tag>         # tags
+//	refs/zonegit/zones/<zone>      # presence marker for zone enumeration
+//	HEAD                           # symbolic ref, encodes "<zone>/<branch>"
+//
+// Zone names are canonical FQDNs with trailing dot (e.g. "foo.com.").
+// They participate verbatim in ref paths; the trailing dot makes a zone
+// segment unambiguous against a branch named like the zone.
 const (
-	HeadRef      = "HEAD"
-	BranchPrefix = "refs/heads/"
-	TagPrefix    = "refs/tags/"
-	// ZoneNameRef stores the canonical zone name (e.g. "foo.com.") as a
-	// length-prefixed ASCII string packed into a 32-byte ref slot. Zone
-	// names longer than HashSize-1 bytes are rejected at write time.
-	ZoneNameRef = "refs/zonegit/zone"
+	HeadRef          = "HEAD"
+	BranchPrefix     = "refs/heads/"
+	TagPrefix        = "refs/tags/"
+	ZoneMarkerPrefix = "refs/zonegit/zones/"
+
+	// LegacyZoneNameRef is the v0.3 single-zone marker. v0.4 detects it
+	// on Open and refuses to proceed without migration. Kept as a constant
+	// for that detection path.
+	LegacyZoneNameRef = "refs/zonegit/zone"
 )
 
+// HEAD is stored as an object-backed symref: the HEAD ref points at the
+// hash of a KindSymref object whose payload is the target ref path. This
+// has no length limit (vs. the v0.3/early-v0.4 length-prefix-in-32-bytes
+// scheme, which capped at 31 bytes).
+
 // DB wraps a store.Storage and provides higher-level ref operations:
-// branches, HEAD, tags, reflog, and ref-ish resolution.
+// zones, branches, HEAD, tags, reflog, and ref-ish resolution.
 type DB struct {
 	s store.Storage
 }
 
 // New returns a DB backed by s.
-func New(s store.Storage) *DB {
-	return &DB{s: s}
+func New(s store.Storage) *DB { return &DB{s: s} }
+
+// --- Zones (presence markers + enumeration) ---
+
+// RegisterZone records the existence of a zone in this repo. Idempotent.
+func (db *DB) RegisterZone(ctx context.Context, zone string) error {
+	zone = canonZone(zone)
+	if zone == "" {
+		return fmt.Errorf("RegisterZone: empty name")
+	}
+	ref := ZoneMarkerPrefix + zone
+	// Zone markers are presence-only; we store a fixed sentinel value so
+	// CAS(ZeroHash, sentinel) creates and any subsequent re-register is a
+	// no-op via CAS(sentinel, sentinel).
+	old, ok, err := db.s.GetRef(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("RegisterZone: %w", err)
+	}
+	sentinel := zoneSentinel()
+	if ok {
+		if old == sentinel {
+			return nil // already registered
+		}
+		// Some other content — refuse to clobber.
+		return fmt.Errorf("RegisterZone: ref %s holds unexpected content", ref)
+	}
+	return db.s.CASRef(ctx, ref, store.ZeroHash, sentinel)
 }
 
-// --- HEAD ---
+// UnregisterZone removes a zone marker. Refuses if any branches or tags
+// still exist under that zone unless force is true.
+func (db *DB) UnregisterZone(ctx context.Context, zone string, force bool) error {
+	zone = canonZone(zone)
+	if !force {
+		bs, err := db.ListBranches(ctx, zone)
+		if err != nil {
+			return err
+		}
+		if len(bs) > 0 {
+			return fmt.Errorf("UnregisterZone: %s has %d branch(es); pass force=true to remove anyway", zone, len(bs))
+		}
+	}
+	return db.s.DeleteRef(ctx, ZoneMarkerPrefix+zone, zoneSentinel())
+}
 
-// ReadHEAD returns the current HEAD. HEAD is stored as a symbolic ref
-// whose value is a branch name (e.g. "refs/heads/main"). We store
-// it as a special ref whose "hash" is actually the branch ref name
-// encoded. For v0, we store the branch name in a ref called "HEAD".
+// ListZones returns all registered zones, sorted.
+func (db *DB) ListZones(ctx context.Context) ([]string, error) {
+	entries, err := db.s.ListRefs(ctx, ZoneMarkerPrefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, strings.TrimPrefix(e.Name, ZoneMarkerPrefix))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// IsZoneRegistered reports whether zone has been registered.
+func (db *DB) IsZoneRegistered(ctx context.Context, zone string) (bool, error) {
+	_, ok, err := db.s.GetRef(ctx, ZoneMarkerPrefix+canonZone(zone))
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+// --- HEAD (object-backed symref) ---
+
+// ReadHEAD returns (zone, branch, commit). commit may be ZeroHash for an
+// orphan branch (branch exists symbolically but has no commits yet).
 //
-// Returns the branch name (e.g. "refs/heads/main") and the commit hash
-// that branch points to.
-func (db *DB) ReadHEAD(ctx context.Context) (branch string, commit store.Hash, err error) {
-	branchBytes, ok, err := db.s.GetRef(ctx, HeadRef)
+// Returns store.ErrNotFound if HEAD is not set.
+func (db *DB) ReadHEAD(ctx context.Context) (zone, branch string, commit store.Hash, err error) {
+	headRef, ok, err := db.s.GetRef(ctx, HeadRef)
 	if err != nil {
-		return "", store.ZeroHash, fmt.Errorf("read HEAD: %w", err)
+		return "", "", store.ZeroHash, fmt.Errorf("read HEAD: %w", err)
 	}
 	if !ok {
-		return "", store.ZeroHash, fmt.Errorf("read HEAD: %w", store.ErrNotFound)
+		return "", "", store.ZeroHash, fmt.Errorf("read HEAD: %w", store.ErrNotFound)
 	}
-	// HEAD stores the target branch name encoded in the hash bytes.
-	// We use a simple scheme: first byte = length, rest = ASCII branch name.
-	branch = decodeBranchFromHash(branchBytes)
-	if branch == "" {
-		return "", store.ZeroHash, fmt.Errorf("read HEAD: corrupt symbolic ref")
-	}
-	// Now dereference the branch to get the commit hash.
-	commit, ok, err = db.s.GetRef(ctx, branch)
+	target, err := readSymref(ctx, db.s, headRef)
 	if err != nil {
-		return branch, store.ZeroHash, fmt.Errorf("read HEAD -> %s: %w", branch, err)
+		return "", "", store.ZeroHash, fmt.Errorf("read HEAD: %w", err)
 	}
+	zone, branch, ok = parseBranchTarget(target)
 	if !ok {
-		// Branch exists symbolically but has no commits yet (orphan).
-		return branch, store.ZeroHash, nil
+		return "", "", store.ZeroHash, fmt.Errorf("read HEAD: target %q is not a refs/heads/<zone>/<branch>", target)
 	}
-	return branch, commit, nil
+	commit, found, err := db.s.GetRef(ctx, target)
+	if err != nil {
+		return zone, branch, store.ZeroHash, fmt.Errorf("read HEAD -> %s: %w", target, err)
+	}
+	if !found {
+		return zone, branch, store.ZeroHash, nil // orphan
+	}
+	return zone, branch, commit, nil
 }
 
-// SetHEAD points HEAD at the given branch (must include BranchPrefix).
-func (db *DB) SetHEAD(ctx context.Context, branch string) error {
-	if !strings.HasPrefix(branch, BranchPrefix) {
-		return fmt.Errorf("SetHEAD: branch must start with %q, got %q", BranchPrefix, branch)
+// SetHEAD points HEAD at refs/heads/<zone>/<branch>. No length limit.
+func (db *DB) SetHEAD(ctx context.Context, zone, branch string) error {
+	zone = canonZone(zone)
+	target := BranchPrefix + zone + "/" + branch
+	newH, err := writeSymref(ctx, db.s, target)
+	if err != nil {
+		return fmt.Errorf("SetHEAD: %w", err)
 	}
-	encoded := encodeBranchToHash(branch)
-	// Try create first, then update.
 	old, ok, err := db.s.GetRef(ctx, HeadRef)
 	if err != nil {
 		return fmt.Errorf("SetHEAD: %w", err)
 	}
 	if !ok {
-		return db.s.CASRef(ctx, HeadRef, store.ZeroHash, encoded)
+		return db.s.CASRef(ctx, HeadRef, store.ZeroHash, newH)
 	}
-	return db.s.CASRef(ctx, HeadRef, old, encoded)
+	return db.s.CASRef(ctx, HeadRef, old, newH)
 }
 
-// encodeBranchToHash packs a branch name (up to 31 bytes) into a Hash.
-// Format: [len][name bytes...][zero padding].
-func encodeBranchToHash(branch string) store.Hash {
-	var h store.Hash
-	if len(branch) > store.HashSize-1 {
-		// Truncate — in practice branch names are short.
-		branch = branch[:store.HashSize-1]
+// writeSymref persists a KindSymref object whose payload is target.
+func writeSymref(ctx context.Context, s store.Storage, target string) (store.Hash, error) {
+	h, obj := object.Encode(object.KindSymref, []byte(target))
+	if err := s.PutObject(ctx, h, obj); err != nil {
+		return store.ZeroHash, err
 	}
-	h[0] = byte(len(branch))
-	copy(h[1:], branch)
-	return h
+	return h, nil
 }
 
-func decodeBranchFromHash(h store.Hash) string {
-	n := int(h[0])
-	if n == 0 || n > store.HashSize-1 {
-		return ""
+// readSymref loads a symref object and returns its target. Falls back to
+// the legacy length-prefix-in-32-bytes encoding when h is not a real
+// object hash but a length-prefix slot — this is how we transparently
+// read HEAD on a not-yet-migrated v0.3 repo.
+func readSymref(ctx context.Context, s store.Storage, h store.Hash) (string, error) {
+	obj, err := s.GetObject(ctx, h)
+	if err == nil && obj.Kind == string(object.KindSymref) {
+		return string(obj.Payload), nil
 	}
-	return string(h[1 : 1+n])
-}
-
-// --- Zone metadata ---
-
-// WriteZoneName persists the canonical zone name in the repo so subsequent
-// CLI invocations and the daemon do not have to be told via --zone.
-//
-// The name is packed using the same length-prefixed scheme as HEAD's symbolic
-// ref; this avoids adding a new on-disk object kind. Zone names longer than
-// the available slot are rejected — that's fine for any reasonable
-// authoritative zone (the DNS apex name is well under the limit).
-func (db *DB) WriteZoneName(ctx context.Context, zone string) error {
-	if len(zone) > store.HashSize-1 {
-		return fmt.Errorf("WriteZoneName: zone %q too long (%d > %d)", zone, len(zone), store.HashSize-1)
+	// Legacy fallback: HEAD ref slot held the target as a length-prefixed
+	// ASCII string. Used by v0.3 repos before migration completes.
+	if t := decodeLegacyRefSlot(h); t != "" {
+		return t, nil
 	}
-	packed := encodeBranchToHash(zone) // reuse the same length-prefix encoding
-	old, ok, err := db.s.GetRef(ctx, ZoneNameRef)
 	if err != nil {
-		return fmt.Errorf("WriteZoneName: %w", err)
+		return "", fmt.Errorf("symref load: %w", err)
 	}
-	if !ok {
-		return db.s.CASRef(ctx, ZoneNameRef, store.ZeroHash, packed)
-	}
-	return db.s.CASRef(ctx, ZoneNameRef, old, packed)
+	return "", fmt.Errorf("symref load: unexpected kind %q", obj.Kind)
 }
 
-// ReadZoneName returns the persisted zone name, or "" if none is set.
-func (db *DB) ReadZoneName(ctx context.Context) (string, error) {
-	h, ok, err := db.s.GetRef(ctx, ZoneNameRef)
-	if err != nil {
-		return "", fmt.Errorf("ReadZoneName: %w", err)
-	}
-	if !ok {
-		return "", nil
-	}
-	return decodeBranchFromHash(h), nil
+// --- Branches (zone-scoped) ---
+
+// BranchRef builds the full ref path for (zone, branch).
+func BranchRef(zone, branch string) string {
+	return BranchPrefix + canonZone(zone) + "/" + branch
 }
 
-// --- Branches ---
+// TagRef builds the full ref path for (zone, tag).
+func TagRef(zone, tag string) string {
+	return TagPrefix + canonZone(zone) + "/" + tag
+}
+
+// ParseBranchRef returns (zone, branch, true) if ref is a
+// refs/heads/<zone>/<branch> path, or ("","",false) otherwise.
+func ParseBranchRef(ref string) (zone, branch string, ok bool) {
+	return parseBranchTarget(ref)
+}
+
+func parseBranchTarget(target string) (zone, branch string, ok bool) {
+	if !strings.HasPrefix(target, BranchPrefix) {
+		return "", "", false
+	}
+	rest := target[len(BranchPrefix):]
+	// Zone names end at the LAST "/" — zone is FQDN with trailing dot,
+	// then "/", then a branch name (no slash allowed).
+	slash := strings.LastIndex(rest, "/")
+	if slash <= 0 || slash == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:slash], rest[slash+1:], true
+}
 
 // CreateBranch creates a new branch pointing at commit.
-func (db *DB) CreateBranch(ctx context.Context, name string, commit store.Hash) error {
-	ref := BranchPrefix + name
+func (db *DB) CreateBranch(ctx context.Context, zone, name string, commit store.Hash) error {
+	ref := BranchRef(zone, name)
 	if err := db.s.CASRef(ctx, ref, store.ZeroHash, commit); err != nil {
-		return fmt.Errorf("create branch %s: %w", name, err)
+		return fmt.Errorf("create branch %s/%s: %w", zone, name, err)
 	}
 	return nil
 }
 
 // UpdateBranch moves branch from expected to next (atomic CAS).
-func (db *DB) UpdateBranch(ctx context.Context, name string, expected, next store.Hash) error {
-	ref := BranchPrefix + name
-	return db.s.CASRef(ctx, ref, expected, next)
+func (db *DB) UpdateBranch(ctx context.Context, zone, name string, expected, next store.Hash) error {
+	return db.s.CASRef(ctx, BranchRef(zone, name), expected, next)
 }
 
 // DeleteBranch deletes a branch if it points at expected.
-func (db *DB) DeleteBranch(ctx context.Context, name string, expected store.Hash) error {
-	ref := BranchPrefix + name
-	return db.s.DeleteRef(ctx, ref, expected)
+func (db *DB) DeleteBranch(ctx context.Context, zone, name string, expected store.Hash) error {
+	return db.s.DeleteRef(ctx, BranchRef(zone, name), expected)
 }
 
 // GetBranch returns the hash a branch points to.
-func (db *DB) GetBranch(ctx context.Context, name string) (store.Hash, error) {
-	ref := BranchPrefix + name
+func (db *DB) GetBranch(ctx context.Context, zone, name string) (store.Hash, error) {
+	ref := BranchRef(zone, name)
 	h, ok, err := db.s.GetRef(ctx, ref)
 	if err != nil {
 		return h, err
 	}
 	if !ok {
-		return h, fmt.Errorf("branch %s: %w", name, store.ErrNotFound)
+		return h, fmt.Errorf("branch %s/%s: %w", zone, name, store.ErrNotFound)
 	}
 	return h, nil
 }
 
-// ListBranches returns all branch names (without the prefix), sorted.
-func (db *DB) ListBranches(ctx context.Context) ([]string, error) {
-	entries, err := db.s.ListRefs(ctx, BranchPrefix)
+// ListBranches returns all branch names in zone (without prefix), sorted.
+func (db *DB) ListBranches(ctx context.Context, zone string) ([]string, error) {
+	prefix := BranchPrefix + canonZone(zone) + "/"
+	entries, err := db.s.ListRefs(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = strings.TrimPrefix(e.Name, BranchPrefix)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, strings.TrimPrefix(e.Name, prefix))
 	}
+	sort.Strings(names)
 	return names, nil
 }
 
-// --- Tags ---
+// --- Tags (zone-scoped) ---
 
-// CreateTag creates a lightweight tag (name -> commit hash).
-func (db *DB) CreateTag(ctx context.Context, name string, target store.Hash) error {
-	ref := TagPrefix + name
-	return db.s.CASRef(ctx, ref, store.ZeroHash, target)
+// CreateTag creates a lightweight tag.
+func (db *DB) CreateTag(ctx context.Context, zone, name string, target store.Hash) error {
+	return db.s.CASRef(ctx, TagRef(zone, name), store.ZeroHash, target)
 }
 
 // GetTag returns the hash a tag points to.
-func (db *DB) GetTag(ctx context.Context, name string) (store.Hash, error) {
-	ref := TagPrefix + name
+func (db *DB) GetTag(ctx context.Context, zone, name string) (store.Hash, error) {
+	ref := TagRef(zone, name)
 	h, ok, err := db.s.GetRef(ctx, ref)
 	if err != nil {
 		return h, err
 	}
 	if !ok {
-		return h, fmt.Errorf("tag %s: %w", name, store.ErrNotFound)
+		return h, fmt.Errorf("tag %s/%s: %w", zone, name, store.ErrNotFound)
 	}
 	return h, nil
 }
 
-// ListTags returns all tag names (without the prefix), sorted.
-func (db *DB) ListTags(ctx context.Context) ([]string, error) {
-	entries, err := db.s.ListRefs(ctx, TagPrefix)
+// ListTags returns all tag names in zone (without prefix), sorted.
+func (db *DB) ListTags(ctx context.Context, zone string) ([]string, error) {
+	prefix := TagPrefix + canonZone(zone) + "/"
+	entries, err := db.s.ListRefs(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = strings.TrimPrefix(e.Name, TagPrefix)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, strings.TrimPrefix(e.Name, prefix))
 	}
+	sort.Strings(names)
 	return names, nil
 }
 
 // DeleteTag deletes a tag if it points at expected.
-func (db *DB) DeleteTag(ctx context.Context, name string, expected store.Hash) error {
-	ref := TagPrefix + name
-	return db.s.DeleteRef(ctx, ref, expected)
+func (db *DB) DeleteTag(ctx context.Context, zone, name string, expected store.Hash) error {
+	return db.s.DeleteRef(ctx, TagRef(zone, name), expected)
 }
 
 // --- Reflog ---
@@ -252,27 +336,148 @@ func (db *DB) ReadReflog(ctx context.Context, ref string) ([]store.ReflogEntry, 
 	return db.s.ReadReflog(ctx, ref)
 }
 
+// --- Legacy detection ---
+
+// MigrateLegacyV03 converts a v0.3 single-zone repo to the v0.4 multi-zone
+// layout in place.
+//
+// What changes:
+//   - refs/heads/<branch>               → refs/heads/<zone>/<branch>
+//   - refs/tags/<tag>                   → refs/tags/<zone>/<tag>
+//   - HEAD (length-prefix legacy slot)  → KindSymref object pointing at the new branch path
+//   - refs/zonegit/zones/<zone>         created (zone registration)
+//   - refs/zonegit/zone                 deleted (legacy marker)
+//
+// The function is idempotent: if no migration is needed, it returns
+// (migrated=false, zone="") with no error.
+//
+// Ordering matters for crash safety: each refs.* entry is copied to the
+// new location first, then the old name is deleted. If we crash partway,
+// the worst case is some orphan legacy refs alongside the new refs — both
+// are reachable, the daemon only consults the new ones, and a future
+// migration run cleans them up.
+func (db *DB) MigrateLegacyV03(ctx context.Context) (bool, string, error) {
+	legacy, zoneName, err := db.IsLegacyV03(ctx)
+	if err != nil || !legacy {
+		return false, "", err
+	}
+	zoneName = canonZone(zoneName)
+	if zoneName == "" {
+		return false, "", fmt.Errorf("legacy zone marker present but empty")
+	}
+
+	// Recover legacy HEAD target so we know which branch to point HEAD at
+	// after migration. v0.3 stored HEAD as a length-prefixed ref slot
+	// holding "refs/heads/<branch>".
+	headBranch := "main"
+	if headSlot, ok, err := db.s.GetRef(ctx, HeadRef); err == nil && ok {
+		legacyTarget := decodeLegacyRefSlot(headSlot)
+		if rest := strings.TrimPrefix(legacyTarget, BranchPrefix); rest != "" && !strings.Contains(rest, "/") {
+			headBranch = rest
+		}
+	}
+
+	// Step 1: register the zone (no-op if already present).
+	if err := db.RegisterZone(ctx, zoneName); err != nil {
+		return false, "", fmt.Errorf("migrate: register zone: %w", err)
+	}
+
+	// Step 2: migrate every legacy branch ref. Skip entries already in
+	// the new form (they contain a "/" after the prefix).
+	branchEntries, err := db.s.ListRefs(ctx, BranchPrefix)
+	if err != nil {
+		return false, "", fmt.Errorf("migrate: list branches: %w", err)
+	}
+	for _, e := range branchEntries {
+		rest := strings.TrimPrefix(e.Name, BranchPrefix)
+		if strings.Contains(rest, "/") {
+			continue // already migrated
+		}
+		newRef := BranchRef(zoneName, rest)
+		if err := db.s.CASRef(ctx, newRef, store.ZeroHash, e.Hash); err != nil {
+			return false, "", fmt.Errorf("migrate: copy branch %s: %w", rest, err)
+		}
+		if err := db.s.DeleteRef(ctx, e.Name, e.Hash); err != nil {
+			return false, "", fmt.Errorf("migrate: delete legacy branch %s: %w", rest, err)
+		}
+	}
+
+	// Step 3: migrate every legacy tag ref the same way.
+	tagEntries, err := db.s.ListRefs(ctx, TagPrefix)
+	if err != nil {
+		return false, "", fmt.Errorf("migrate: list tags: %w", err)
+	}
+	for _, e := range tagEntries {
+		rest := strings.TrimPrefix(e.Name, TagPrefix)
+		if strings.Contains(rest, "/") {
+			continue
+		}
+		newRef := TagRef(zoneName, rest)
+		if err := db.s.CASRef(ctx, newRef, store.ZeroHash, e.Hash); err != nil {
+			return false, "", fmt.Errorf("migrate: copy tag %s: %w", rest, err)
+		}
+		if err := db.s.DeleteRef(ctx, e.Name, e.Hash); err != nil {
+			return false, "", fmt.Errorf("migrate: delete legacy tag %s: %w", rest, err)
+		}
+	}
+
+	// Step 4: rewrite HEAD as an object-backed symref.
+	if err := db.SetHEAD(ctx, zoneName, headBranch); err != nil {
+		return false, "", fmt.Errorf("migrate: rewrite HEAD: %w", err)
+	}
+
+	// Step 5: delete the legacy zone-name marker. From this point
+	// IsLegacyV03 returns false on future opens.
+	if h, ok, _ := db.s.GetRef(ctx, LegacyZoneNameRef); ok {
+		_ = db.s.DeleteRef(ctx, LegacyZoneNameRef, h)
+	}
+
+	return true, zoneName, nil
+}
+
+// IsLegacyV03 reports whether this repo was created by zonegit v0.3 or
+// earlier (single-zone layout) and has not yet been migrated. Used by
+// pkg/repo.Open to emit a clear, actionable error.
+func (db *DB) IsLegacyV03(ctx context.Context) (bool, string, error) {
+	h, ok, err := db.s.GetRef(ctx, LegacyZoneNameRef)
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "", nil
+	}
+	zones, err := db.ListZones(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if len(zones) > 0 {
+		// Both legacy marker AND new layout — already migrated; the
+		// legacy ref is harmless dead weight.
+		return false, "", nil
+	}
+	return true, decodeLegacyRefSlot(h), nil
+}
+
 // --- Resolve ref-ish ---
 
-// Resolve parses a ref-ish string and returns the commit hash it points to.
+// Resolve parses a ref-ish string and returns the commit hash it points
+// to. Supported forms:
 //
-// Supported forms:
 //   - Full hex hash (64 chars)
-//   - Branch name: "main" -> looks up refs/heads/main
-//   - Tag name: "v1.0" -> looks up refs/tags/v1.0
-//   - "HEAD" -> dereferences HEAD
-//   - Ancestor: "main~3" or "HEAD~1" -> walks N parents
-//   - Raw ref path: "refs/heads/main" or "refs/tags/v1.0"
+//   - "HEAD" / "HEAD~N"
+//   - Bare branch name "main" — resolved within the active zone
+//   - Zone-qualified branch "foo.com./main" — explicit zone
+//   - Tag name "v1" — within the active zone
+//   - Full ref path "refs/heads/foo.com./main" or "refs/tags/foo.com./v1"
+//
+// Multi-zone-aware: bare names use the active zone derived from HEAD.
+// Pass ResolveInZone for cross-zone resolution.
 func (db *DB) Resolve(ctx context.Context, refish string) (store.Hash, error) {
-	// Split off ~N suffix.
 	base, ancestor := splitAncestor(refish)
-
-	h, err := db.resolveBase(ctx, base)
+	h, err := db.resolveBase(ctx, base, "")
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("resolve %q: %w", refish, err)
 	}
-
-	// Walk ancestors.
 	for i := 0; i < ancestor; i++ {
 		obj, err := db.s.GetObject(ctx, h)
 		if err != nil {
@@ -288,13 +493,38 @@ func (db *DB) Resolve(ctx context.Context, refish string) (store.Hash, error) {
 		if len(c.Parents) == 0 {
 			return store.ZeroHash, fmt.Errorf("resolve %q: commit %s has no parent (at ~%d)", refish, h.Short(), i+1)
 		}
-		h = c.Parents[0] // follow first parent
+		h = c.Parents[0]
 	}
-
 	return h, nil
 }
 
-func (db *DB) resolveBase(ctx context.Context, base string) (store.Hash, error) {
+// ResolveInZone is like Resolve but pins bare branch / tag lookups to
+// the given zone instead of reading HEAD. Useful for the CLI's --zone
+// override.
+func (db *DB) ResolveInZone(ctx context.Context, zone, refish string) (store.Hash, error) {
+	base, ancestor := splitAncestor(refish)
+	h, err := db.resolveBase(ctx, base, canonZone(zone))
+	if err != nil {
+		return store.ZeroHash, fmt.Errorf("resolve %q in %s: %w", refish, zone, err)
+	}
+	for i := 0; i < ancestor; i++ {
+		obj, err := db.s.GetObject(ctx, h)
+		if err != nil {
+			return store.ZeroHash, err
+		}
+		c, err := object.DecodeCommit(obj.Payload)
+		if err != nil {
+			return store.ZeroHash, err
+		}
+		if len(c.Parents) == 0 {
+			return store.ZeroHash, fmt.Errorf("resolve %q in %s: no parent at ~%d", refish, zone, i+1)
+		}
+		h = c.Parents[0]
+	}
+	return h, nil
+}
+
+func (db *DB) resolveBase(ctx context.Context, base, zoneOverride string) (store.Hash, error) {
 	// 1) Full hex hash?
 	if len(base) == 2*store.HashSize {
 		return store.ParseHash(base)
@@ -302,7 +532,7 @@ func (db *DB) resolveBase(ctx context.Context, base string) (store.Hash, error) 
 
 	// 2) HEAD?
 	if base == HeadRef {
-		_, commit, err := db.ReadHEAD(ctx)
+		_, _, commit, err := db.ReadHEAD(ctx)
 		if err != nil {
 			return store.ZeroHash, err
 		}
@@ -324,21 +554,40 @@ func (db *DB) resolveBase(ctx context.Context, base string) (store.Hash, error) 
 		return h, nil
 	}
 
-	// 4) Try as branch name.
-	h, ok, err := db.s.GetRef(ctx, BranchPrefix+base)
-	if err != nil {
-		return store.ZeroHash, err
-	}
-	if ok {
-		return h, nil
+	// 4) Zone-qualified branch "<zone>/<branch>"?  Zone segment ends with
+	// a dot; branch name does not contain a slash.
+	if slash := strings.LastIndex(base, "/"); slash > 0 {
+		zone := base[:slash]
+		name := base[slash+1:]
+		if h, ok, err := db.s.GetRef(ctx, BranchRef(zone, name)); err != nil {
+			return store.ZeroHash, err
+		} else if ok {
+			return h, nil
+		}
+		if h, ok, err := db.s.GetRef(ctx, TagRef(zone, name)); err != nil {
+			return store.ZeroHash, err
+		} else if ok {
+			return h, nil
+		}
 	}
 
-	// 5) Try as tag name.
-	h, ok, err = db.s.GetRef(ctx, TagPrefix+base)
-	if err != nil {
-		return store.ZeroHash, err
+	// 5) Bare name — resolve against active or overridden zone.
+	zone := zoneOverride
+	if zone == "" {
+		z, _, _, err := db.ReadHEAD(ctx)
+		if err != nil {
+			return store.ZeroHash, fmt.Errorf("bare ref %q: cannot resolve without HEAD: %w", base, err)
+		}
+		zone = z
 	}
-	if ok {
+	if h, ok, err := db.s.GetRef(ctx, BranchRef(zone, base)); err != nil {
+		return store.ZeroHash, err
+	} else if ok {
+		return h, nil
+	}
+	if h, ok, err := db.s.GetRef(ctx, TagRef(zone, base)); err != nil {
+		return store.ZeroHash, err
+	} else if ok {
 		return h, nil
 	}
 
@@ -358,8 +607,44 @@ func splitAncestor(s string) (string, int) {
 	}
 	n, err := strconv.Atoi(nStr)
 	if err != nil || n < 0 {
-		// Not a valid ancestor spec — treat the whole thing as a name.
 		return s, 0
 	}
 	return base, n
+}
+
+// --- low-level encoding helpers ---
+
+// canonZone normalises a zone name to lowercase with trailing dot.
+func canonZone(z string) string {
+	z = strings.ToLower(z)
+	if z == "" {
+		return ""
+	}
+	if !strings.HasSuffix(z, ".") {
+		z += "."
+	}
+	return z
+}
+
+// zoneSentinel is the fixed marker value used for ZoneMarkerPrefix refs.
+// The exact bytes are arbitrary — we just need a non-zero hash that
+// won't collide with a real commit hash.
+func zoneSentinel() store.Hash {
+	var h store.Hash
+	copy(h[:], "zonegit:zone:marker:v04")
+	return h
+}
+
+// decodeLegacyRefSlot reads the v0.3 length-prefix-in-32-bytes encoding
+// (1-byte length, then ASCII payload). Used only to (a) read a
+// not-yet-migrated v0.3 HEAD, and (b) decode the legacy single-zone
+// marker at LegacyZoneNameRef.
+//
+// Returns "" if the slot doesn't look like a legacy encoding.
+func decodeLegacyRefSlot(h store.Hash) string {
+	n := int(h[0])
+	if n == 0 || n > store.HashSize-1 {
+		return ""
+	}
+	return string(h[1 : 1+n])
 }

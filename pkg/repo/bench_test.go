@@ -46,7 +46,7 @@ func BenchmarkLookup_10k(b *testing.B) {
 	r, names := buildZone(b, 10_000)
 	defer r.Close()
 	ctx := context.Background()
-	_, head, err := r.Head(ctx)
+	_, _, head, err := r.Head(ctx)
 	if err != nil {
 		b.Fatal(err)
 	}

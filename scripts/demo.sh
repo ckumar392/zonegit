@@ -226,7 +226,28 @@ run "$BIN/zonegit --repo $REPO approve new-mail --into main"
 sleep 0.3
 run "dig +short @127.0.0.1 -p $PORT $ZONE MX"
 
-step 18 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
+step 18 "MULTI-ZONE — second zone in the same repo" "register bar.com. alongside foo.com., serve both from one daemon"
+ZONE2="${ZONE2:-bar.com.}"
+ZONEFILE2="$(mktemp /tmp/zonegit-demo-zone2.XXXXXX)"
+cat >"$ZONEFILE2" <<EOF
+\$ORIGIN $ZONE2
+\$TTL 300
+@   IN SOA ns1.$ZONE2 admin.$ZONE2 1 7200 3600 1209600 300
+    IN NS  ns1.$ZONE2
+ns1 IN A   10.0.0.2
+api IN A   5.5.5.5
+EOF
+run "$BIN/zonegit --repo $REPO zone add $ZONE2"
+run "$BIN/zonegit --repo $REPO zone switch $ZONE2"
+run "$BIN/zonegit --repo $REPO import $ZONEFILE2 -m 'initial $ZONE2 import'"
+run "$BIN/zonegit --repo $REPO zone list"
+dim   "      same daemon, no restart: its background reconciler discovered $ZONE2 within 1s."
+sleep 1.5  # give the daemon's zone reconciler one tick to notice
+printf '  dig api.%s : ' "$ZONE"; dig +short @127.0.0.1 -p "$PORT" "api.$ZONE" A
+printf '  dig api.%s : ' "$ZONE2"; dig +short @127.0.0.1 -p "$PORT" "api.$ZONE2" A
+dim   "      one daemon, one port, two zones, no restart. Branches in $ZONE cannot affect $ZONE2 — they live under separate refs."
+
+step 19 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
 run "curl -s http://127.0.0.1:$METRICS_PORT/metrics | head -20"
 
 echo

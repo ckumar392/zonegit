@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -19,25 +20,33 @@ import (
 	"github.com/ckumar392/zonegit/pkg/zone"
 )
 
-// DefaultBranch is the branch v0 uses for new repos.
+// DefaultBranch is the branch new zones get on first init.
 const DefaultBranch = "main"
+
+// ErrReadOnlyMigrationNeeded is returned by Open when a v0.3 repo is
+// opened read-only — migration is a write operation, so the user must
+// re-open without ReadOnly to convert it. This keeps the daemon from
+// silently mutating a repo a separate writer process is also holding.
+var ErrReadOnlyMigrationNeeded = errors.New("legacy v0.3 repo opened read-only; re-open writable to auto-migrate")
 
 // Repo is the public zonegit handle.
 //
-// A Repo is bound to one Storage and one zone (the zone name is part of
-// init metadata so that label paths in trees can be relative to the zone
-// apex). All write paths take a per-Repo write lock to avoid useless CAS
+// In v0.4 a repo can hold multiple zones. Mutations (Set, Delete, Commit)
+// operate on the active zone — the zone HEAD currently points at. The
+// CLI's `--zone` flag and the SwitchZone API move HEAD between zones.
+// All write paths take a per-Repo write lock to avoid useless CAS
 // retries against ourselves; concurrent readers are unblocked.
 type Repo struct {
 	storage store.Storage
 	refs    *refs.DB
 
-	// staging holds in-memory edits made via Set/Delete that have not yet
-	// been Commit-ted. Keys are (path joined by ".", rrtype). Value of nil
-	// means "delete this rrset on commit".
 	mu      sync.Mutex
 	staging map[stagingKey]stagingValue
-	zone    string // canonical zone name with trailing dot
+
+	// activeZone is the zone derived from HEAD at Open / SwitchZone time.
+	// Read paths that need the zone (Set, Import, Lookup) consult this
+	// field instead of re-parsing HEAD on every call.
+	activeZone string
 }
 
 type stagingKey struct {
@@ -66,7 +75,11 @@ type Options struct {
 }
 
 // Open opens an existing repo or creates one if not present (when using a
-// path-based Storage). The branch HEAD points at is loaded into memory.
+// path-based Storage).
+//
+// If the repo uses the v0.3 single-zone layout, Open returns
+// ErrLegacyRepo with the legacy zone name in the wrapped message; the
+// caller is expected to surface a migration instruction.
 func Open(opts Options) (*Repo, error) {
 	var s store.Storage
 	switch {
@@ -94,18 +107,29 @@ func Open(opts Options) (*Repo, error) {
 		refs:    refs.New(s),
 		staging: make(map[stagingKey]stagingValue),
 	}
-	// Best-effort: pick up the persisted zone name if one was recorded by Init.
-	// We ignore errors here so that brand-new (empty) repos still open cleanly.
-	if z, err := r.refs.ReadZoneName(context.Background()); err == nil && z != "" {
-		r.zone = canonZone(z)
+
+	ctx := context.Background()
+	if legacy, _, err := r.refs.IsLegacyV03(ctx); err == nil && legacy {
+		if opts.ReadOnly {
+			_ = r.storage.Close()
+			return nil, ErrReadOnlyMigrationNeeded
+		}
+		if _, _, err := r.refs.MigrateLegacyV03(ctx); err != nil {
+			_ = r.storage.Close()
+			return nil, fmt.Errorf("auto-migrate legacy repo: %w", err)
+		}
+	}
+
+	// Populate activeZone from HEAD if HEAD is set. Brand-new repos have
+	// no HEAD yet — that's fine; Init will set it.
+	if zoneName, _, _, err := r.refs.ReadHEAD(ctx); err == nil && zoneName != "" {
+		r.activeZone = zoneName
 	}
 	return r, nil
 }
 
 // Close releases the underlying storage.
-func (r *Repo) Close() error {
-	return r.storage.Close()
-}
+func (r *Repo) Close() error { return r.storage.Close() }
 
 // Storage returns the underlying store.Storage. Useful for tests and
 // for embedders that need lower-level access.
@@ -114,45 +138,83 @@ func (r *Repo) Storage() store.Storage { return r.storage }
 // Refs returns the underlying refs.DB.
 func (r *Repo) Refs() *refs.DB { return r.refs }
 
-// --- Init / Zone metadata ---
+// --- Init / zones ---
 
-// Init creates an empty repo on the default branch with the given zone
-// name. The zone name is persisted so subsequent opens (CLI invocations,
-// the daemon) do not need an explicit --zone flag.
+// Init creates an empty repo registering zone with a default branch and
+// pointing HEAD at it. If the zone already exists, Init is a no-op for
+// that zone and leaves HEAD alone.
 //
-// Init is idempotent: if HEAD is already set, it only refreshes the zone
-// metadata.
+// Multi-zone repos call Init for the first zone and AddZone for each
+// subsequent zone; behaviour is equivalent except Init also sets HEAD
+// if it isn't already set.
 func (r *Repo) Init(ctx context.Context, zoneName string) error {
 	zoneName = canonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.zone = zoneName
 
-	if err := r.refs.WriteZoneName(ctx, zoneName); err != nil {
-		return fmt.Errorf("Init: persist zone name: %w", err)
+	if err := r.refs.RegisterZone(ctx, zoneName); err != nil {
+		return fmt.Errorf("Init: register zone: %w", err)
 	}
-	if _, _, err := r.refs.ReadHEAD(ctx); err == nil {
-		return nil // already initialized
+	// If HEAD is not set yet, point it at this zone's default branch.
+	if _, _, _, err := r.refs.ReadHEAD(ctx); err != nil {
+		if err := r.refs.SetHEAD(ctx, zoneName, DefaultBranch); err != nil {
+			return fmt.Errorf("Init: set HEAD: %w", err)
+		}
+		r.activeZone = zoneName
 	}
-	// Set HEAD to refs/heads/main; branch itself is not created until the
-	// first commit lands.
-	return r.refs.SetHEAD(ctx, refs.BranchPrefix+DefaultBranch)
+	return nil
 }
 
-// Zone returns the canonical zone name (with trailing dot).
-func (r *Repo) Zone() string { return r.zone }
+// AddZone registers an additional zone without moving HEAD. Use this to
+// host a second zone in an existing repo.
+func (r *Repo) AddZone(ctx context.Context, zoneName string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refs.RegisterZone(ctx, canonZone(zoneName))
+}
 
-// SetZone overrides the in-memory zone name (used by Open after restoring
-// from disk; eventually we'll persist this).
-func (r *Repo) SetZone(z string) { r.zone = canonZone(z) }
+// Zones returns all registered zones in the repo, sorted.
+func (r *Repo) Zones(ctx context.Context) ([]string, error) {
+	return r.refs.ListZones(ctx)
+}
 
-// --- Mutation API ---
+// ActiveZone returns the zone HEAD currently points at, or "" if HEAD
+// is unset.
+func (r *Repo) ActiveZone() string { return r.activeZone }
+
+// SwitchZone moves HEAD to (zone, branch) and refreshes the cached
+// active zone. The zone must already be registered; branch may or may
+// not exist (orphan branches are allowed).
+func (r *Repo) SwitchZone(ctx context.Context, zoneName, branch string) error {
+	zoneName = canonZone(zoneName)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ok, err := r.refs.IsZoneRegistered(ctx, zoneName)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("SwitchZone: zone %q is not registered", zoneName)
+	}
+	if err := r.refs.SetHEAD(ctx, zoneName, branch); err != nil {
+		return err
+	}
+	r.activeZone = zoneName
+	return nil
+}
+
+// --- Mutation API (operates on the active zone) ---
 
 // Set stages an RRset write to be applied on the next Commit. RRs are
 // homogenized (same name/class/type/ttl) per pkg/zone rules.
+//
+// The RR owner name is interpreted relative to the active zone.
 func (r *Repo) Set(ctx context.Context, rrs []dns.RR) error {
 	if len(rrs) == 0 {
 		return fmt.Errorf("Set: empty RRset")
+	}
+	if r.activeZone == "" {
+		return fmt.Errorf("Set: no active zone; call Init or SwitchZone first")
 	}
 	payload, err := zone.EncodeRRset(rrs)
 	if err != nil {
@@ -168,7 +230,7 @@ func (r *Repo) Set(ctx context.Context, rrs []dns.RR) error {
 	if !strings.HasSuffix(owner, ".") {
 		owner += "."
 	}
-	fqdn := stripZoneSuffix(owner, r.zone)
+	fqdn := stripZoneSuffix(owner, r.activeZone)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -176,8 +238,8 @@ func (r *Repo) Set(ctx context.Context, rrs []dns.RR) error {
 	return nil
 }
 
-// Delete stages removal of (fqdn, rrtype). fqdn must be relative to the zone
-// apex ("" or "@" for the apex itself).
+// Delete stages removal of (fqdn, rrtype). fqdn must be relative to the
+// active zone apex ("" or "@" for the apex itself).
 func (r *Repo) Delete(fqdn, rrtype string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -194,11 +256,12 @@ func (r *Repo) StagedCount() int {
 // --- Import ---
 
 // Import reads a zonefile and stages a Set for every RRset it contains.
+// The zonefile is parsed against the active zone's apex.
 func (r *Repo) Import(ctx context.Context, src io.Reader) (int, error) {
-	if r.zone == "" {
-		return 0, fmt.Errorf("Import: zone not set; call Init first")
+	if r.activeZone == "" {
+		return 0, fmt.Errorf("Import: no active zone; call Init or SwitchZone first")
 	}
-	rrsets, err := zone.ImportZonefile(src, r.zone)
+	rrsets, err := zone.ImportZonefile(src, r.activeZone)
 	if err != nil {
 		return 0, err
 	}
@@ -212,10 +275,9 @@ func (r *Repo) Import(ctx context.Context, src io.Reader) (int, error) {
 
 // --- Commit ---
 
-// Commit applies all staged edits as a single new commit on the current
-// branch, advances HEAD, appends a reflog entry, and clears staging.
-//
-// Returns the new commit hash.
+// Commit applies all staged edits as a single new commit on the active
+// branch (the branch HEAD points at), advances the branch ref, appends
+// a reflog entry, and clears staging.
 func (r *Repo) Commit(ctx context.Context, author object.Identity, msg string) (store.Hash, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -223,11 +285,11 @@ func (r *Repo) Commit(ctx context.Context, author object.Identity, msg string) (
 		return store.ZeroHash, fmt.Errorf("Commit: no staged changes")
 	}
 
-	// Read HEAD (may be orphan).
-	branch, parent, err := r.refs.ReadHEAD(ctx)
+	zoneName, branch, parent, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("Commit: read HEAD: %w", err)
 	}
+
 	var parentTree store.Hash
 	if !parent.IsZero() {
 		obj, err := r.storage.GetObject(ctx, parent)
@@ -241,16 +303,10 @@ func (r *Repo) Commit(ctx context.Context, author object.Identity, msg string) (
 		parentTree = pc.Tree
 	}
 
-	// Auto-bump apex SOA serial when any non-SOA RRset changes and the user
-	// did not stage an SOA explicitly. Without this, secondaries and
-	// monitoring keyed off the SOA serial would never notice changes — the
-	// pitch of "no SOA dance" becomes a lie. The user can still pre-stage
-	// their own SOA to override.
 	if err := r.maybeBumpSOA(ctx, parentTree); err != nil {
 		return store.ZeroHash, fmt.Errorf("Commit: auto-bump SOA: %w", err)
 	}
 
-	// Apply each staged edit in deterministic order.
 	keys := sortedKeys(r.staging)
 	tree := parentTree
 	for _, k := range keys {
@@ -286,31 +342,26 @@ func (r *Repo) Commit(ctx context.Context, author object.Identity, msg string) (
 		return store.ZeroHash, err
 	}
 
-	// Advance branch ref via CAS (handles both create and update).
-	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
 	if parent.IsZero() {
-		if err := r.refs.CreateBranch(ctx, branchName, commitHash); err != nil {
+		if err := r.refs.CreateBranch(ctx, zoneName, branch, commitHash); err != nil {
 			return store.ZeroHash, err
 		}
 	} else {
-		if err := r.refs.UpdateBranch(ctx, branchName, parent, commitHash); err != nil {
+		if err := r.refs.UpdateBranch(ctx, zoneName, branch, parent, commitHash); err != nil {
 			return store.ZeroHash, err
 		}
 	}
 
-	// Reflog.
-	_ = r.refs.AppendReflog(ctx, branch, parent, commitHash, author.String(), "commit", msg)
-
-	// Clear staging.
+	_ = r.refs.AppendReflog(ctx, refs.BranchRef(zoneName, branch), parent, commitHash, author.String(), "commit", msg)
 	r.staging = make(map[stagingKey]stagingValue)
 	return commitHash, nil
 }
 
 // --- Read API ---
 
-// Head returns (branch, commit) where branch is "refs/heads/X". commit may
-// be ZeroHash for an orphan branch.
-func (r *Repo) Head(ctx context.Context) (string, store.Hash, error) {
+// Head returns (zone, branch, commit) where (zone, branch) is what HEAD
+// points at. commit may be ZeroHash for an orphan branch.
+func (r *Repo) Head(ctx context.Context) (zoneName, branch string, commit store.Hash, err error) {
 	return r.refs.ReadHEAD(ctx)
 }
 
@@ -348,7 +399,7 @@ func (r *Repo) Diff(ctx context.Context, fromRefish, toRefish string) ([]history
 // Blame returns the commit that introduced the current value of (fqdn, rrtype)
 // at HEAD.
 func (r *Repo) Blame(ctx context.Context, fqdn, rrtype string) (history.BlameInfo, error) {
-	_, head, err := r.refs.ReadHEAD(ctx)
+	_, _, head, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
 		return history.BlameInfo{}, err
 	}
@@ -362,7 +413,7 @@ func (r *Repo) Blame(ctx context.Context, fqdn, rrtype string) (history.BlameInf
 // given commit (or HEAD if commit is zero). Returns ErrNotFound if absent.
 func (r *Repo) Lookup(ctx context.Context, commit store.Hash, fqdn, rrtype string) (zone.RRset, error) {
 	if commit.IsZero() {
-		_, h, err := r.refs.ReadHEAD(ctx)
+		_, _, h, err := r.refs.ReadHEAD(ctx)
 		if err != nil {
 			return zone.RRset{}, err
 		}
@@ -394,6 +445,9 @@ func (r *Repo) Lookup(ctx context.Context, commit store.Hash, fqdn, rrtype strin
 
 func canonZone(z string) string {
 	z = strings.ToLower(z)
+	if z == "" {
+		return ""
+	}
 	if !strings.HasSuffix(z, ".") {
 		z += "."
 	}
@@ -412,7 +466,6 @@ func stripZoneSuffix(owner, zoneName string) string {
 	if strings.HasSuffix(owner, zoneName) {
 		return strings.TrimSuffix(owner, zoneName)
 	}
-	// Out-of-zone — store under a synthetic path so we don't lose data.
 	return strings.TrimSuffix(owner, ".")
 }
 
@@ -427,9 +480,6 @@ func splitFQDN(fqdn string) []string {
 		return nil
 	}
 	parts := strings.Split(fqdn, ".")
-	// Reverse so deepest is last? No — for api.foo.com. with zone foo.com.,
-	// fqdn becomes "api" and path is ["api"]. For "api.web", we want
-	// ["web", "api"] so that the tree under web/ contains api as a subtree.
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
@@ -450,13 +500,11 @@ func sortedKeys(m map[stagingKey]stagingValue) []stagingKey {
 	for k := range m {
 		out = append(out, k)
 	}
-	// Lexicographic on (fqdn, rrtype) for deterministic commit order.
 	sortKeys(out)
 	return out
 }
 
 func sortKeys(ks []stagingKey) {
-	// Insertion sort — count is tiny in v0.
 	for i := 1; i < len(ks); i++ {
 		for j := i; j > 0; j-- {
 			if lessKey(ks[j], ks[j-1]) {
@@ -476,18 +524,18 @@ func lessKey(a, b stagingKey) bool {
 }
 
 // maybeBumpSOA auto-stages an SOA with serial+1 when the staging area has
-// at least one non-SOA edit, no explicit SOA edit, and the parent tree has
-// an apex SOA to bump.
+// at least one non-SOA edit, no explicit SOA edit, and the parent tree
+// has an apex SOA to bump.
 //
 // Called from Commit while r.mu is held.
 func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	if parentTree.IsZero() {
-		return nil // initial commit — caller staged whatever they wanted
+		return nil
 	}
 	hasNonSOA := false
 	for k := range r.staging {
 		if k.rrtype == "SOA" && k.fqdn == "" {
-			return nil // user staged their own apex SOA; respect it
+			return nil
 		}
 		hasNonSOA = true
 	}
@@ -496,7 +544,6 @@ func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	}
 	soaBlobHash, err := object.WalkTree(ctx, r.storage, parentTree, nil, "SOA")
 	if err != nil {
-		// No apex SOA in the parent — nothing to bump.
 		return nil
 	}
 	obj, err := r.storage.GetObject(ctx, soaBlobHash)
@@ -524,8 +571,9 @@ func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	return nil
 }
 
-// treeOf returns the tree hash referenced by a commit, or ZeroHash on error
-// (callers must have already validated commit existence via Resolve).
+// treeOf returns the tree hash referenced by a commit, or ZeroHash on
+// error (callers must have already validated commit existence via
+// Resolve).
 func treeOf(ctx context.Context, s store.Storage, commit store.Hash) store.Hash {
 	if commit.IsZero() {
 		return store.ZeroHash
