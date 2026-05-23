@@ -12,8 +12,20 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ckumar392/zonegit/pkg/object"
+	"github.com/ckumar392/zonegit/pkg/refs"
 	"github.com/ckumar392/zonegit/pkg/repo"
 )
+
+// currentBranch returns the name of the branch HEAD points at. Used for
+// the "[<branch> <hash>] message" commit summary line so the demo output
+// matches the branch the user is actually on.
+func currentBranch(r *repo.Repo) string {
+	branch, _, err := r.Refs().ReadHEAD(context.Background())
+	if err != nil {
+		return "(unknown)"
+	}
+	return strings.TrimPrefix(branch, refs.BranchPrefix)
+}
 
 // Globals populated from --repo / ZONEGIT_REPO.
 var (
@@ -56,6 +68,12 @@ func main() {
 		newMergeCmd(),
 		newRevertCmd(),
 		newResetCmd(),
+		newProposeCmd(),
+		newApproveCmd(),
+		newReviewCmd(),
+		newKeygenCmd(),
+		newSignCommitCmd(),
+		newVerifyCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -153,7 +171,7 @@ func newImportCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[main %s] %s (%d RRsets)\n", h.Short(), msg, n)
+			fmt.Printf("[%s %s] %s (%d RRsets)\n", currentBranch(r), h.Short(), msg, n)
 			return nil
 		},
 	}
@@ -199,7 +217,7 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[main %s] %s\n", h.Short(), msg)
+			fmt.Printf("[%s %s] %s\n", currentBranch(r), h.Short(), msg)
 			return nil
 		},
 	}
@@ -228,7 +246,7 @@ func newDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[main %s] %s\n", h.Short(), msg)
+			fmt.Printf("[%s %s] %s\n", currentBranch(r), h.Short(), msg)
 			return nil
 		},
 	}

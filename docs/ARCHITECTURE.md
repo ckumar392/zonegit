@@ -308,12 +308,12 @@ BEFORE                                  AFTER
 
 ### What gets replaced
 
-| Before (mutable)       | After (zonegit)                        |
-|------------------------|--------------------------------------|
-| DB tables / rows       | Append-only commits (Blob/Tree/Commit) |
-| Periodic snapshots     | Commit history (full DAG)            |
-| Audit log tables       | Cryptographic history (signed commits v3+) |
-| Import / sync scripts  | Commit-based diffs + merge           |
+| Before (mutable)      | After (zonegit)                            |
+| --------------------- | ------------------------------------------ |
+| DB tables / rows      | Append-only commits (Blob/Tree/Commit)     |
+| Periodic snapshots    | Commit history (full DAG)                  |
+| Audit log tables      | Cryptographic history (signed commits v3+) |
+| Import / sync scripts | Commit-based diffs + merge                 |
 
 ### What stays exactly the same
 

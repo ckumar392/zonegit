@@ -89,11 +89,17 @@ func Open(opts Options) (*Repo, error) {
 	default:
 		s = memstore.New()
 	}
-	return &Repo{
+	r := &Repo{
 		storage: s,
 		refs:    refs.New(s),
 		staging: make(map[stagingKey]stagingValue),
-	}, nil
+	}
+	// Best-effort: pick up the persisted zone name if one was recorded by Init.
+	// We ignore errors here so that brand-new (empty) repos still open cleanly.
+	if z, err := r.refs.ReadZoneName(context.Background()); err == nil && z != "" {
+		r.zone = canonZone(z)
+	}
+	return r, nil
 }
 
 // Close releases the underlying storage.
@@ -111,13 +117,20 @@ func (r *Repo) Refs() *refs.DB { return r.refs }
 // --- Init / Zone metadata ---
 
 // Init creates an empty repo on the default branch with the given zone
-// name. It is a no-op if HEAD is already set.
+// name. The zone name is persisted so subsequent opens (CLI invocations,
+// the daemon) do not need an explicit --zone flag.
+//
+// Init is idempotent: if HEAD is already set, it only refreshes the zone
+// metadata.
 func (r *Repo) Init(ctx context.Context, zoneName string) error {
 	zoneName = canonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.zone = zoneName
 
+	if err := r.refs.WriteZoneName(ctx, zoneName); err != nil {
+		return fmt.Errorf("Init: persist zone name: %w", err)
+	}
 	if _, _, err := r.refs.ReadHEAD(ctx); err == nil {
 		return nil // already initialized
 	}
@@ -226,6 +239,15 @@ func (r *Repo) Commit(ctx context.Context, author object.Identity, msg string) (
 			return store.ZeroHash, err
 		}
 		parentTree = pc.Tree
+	}
+
+	// Auto-bump apex SOA serial when any non-SOA RRset changes and the user
+	// did not stage an SOA explicitly. Without this, secondaries and
+	// monitoring keyed off the SOA serial would never notice changes — the
+	// pitch of "no SOA dance" becomes a lie. The user can still pre-stage
+	// their own SOA to override.
+	if err := r.maybeBumpSOA(ctx, parentTree); err != nil {
+		return store.ZeroHash, fmt.Errorf("Commit: auto-bump SOA: %w", err)
 	}
 
 	// Apply each staged edit in deterministic order.
@@ -451,6 +473,55 @@ func lessKey(a, b stagingKey) bool {
 		return a.fqdn < b.fqdn
 	}
 	return a.rrtype < b.rrtype
+}
+
+// maybeBumpSOA auto-stages an SOA with serial+1 when the staging area has
+// at least one non-SOA edit, no explicit SOA edit, and the parent tree has
+// an apex SOA to bump.
+//
+// Called from Commit while r.mu is held.
+func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
+	if parentTree.IsZero() {
+		return nil // initial commit — caller staged whatever they wanted
+	}
+	hasNonSOA := false
+	for k := range r.staging {
+		if k.rrtype == "SOA" && k.fqdn == "" {
+			return nil // user staged their own apex SOA; respect it
+		}
+		hasNonSOA = true
+	}
+	if !hasNonSOA {
+		return nil
+	}
+	soaBlobHash, err := object.WalkTree(ctx, r.storage, parentTree, nil, "SOA")
+	if err != nil {
+		// No apex SOA in the parent — nothing to bump.
+		return nil
+	}
+	obj, err := r.storage.GetObject(ctx, soaBlobHash)
+	if err != nil {
+		return err
+	}
+	soa, err := zone.DecodeRRset(obj.Payload)
+	if err != nil {
+		return err
+	}
+	bumped, err := zone.BumpSOASerial(soa)
+	if err != nil {
+		return err
+	}
+	payload, err := zone.EncodeRRset(bumped.RRs)
+	if err != nil {
+		return err
+	}
+	b := object.Blob{Payload: payload}
+	h, blobObj := b.Encode()
+	if err := r.storage.PutObject(ctx, h, blobObj); err != nil {
+		return err
+	}
+	r.staging[stagingKey{fqdn: "", rrtype: "SOA"}] = stagingValue{blob: h}
+	return nil
 }
 
 // treeOf returns the tree hash referenced by a commit, or ZeroHash on error
