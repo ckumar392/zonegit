@@ -38,7 +38,7 @@ import (
 // per Corefile block.
 type Zonegit struct {
 	Next     plugin.Handler
-	Zone     string             // canonical zone with trailing dot
+	Zone     string // canonical zone with trailing dot
 	Resolver *resolve.Resolver
 }
 

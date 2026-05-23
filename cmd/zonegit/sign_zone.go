@@ -27,9 +27,9 @@ func keysDir() string { return filepath.Join(flagRepoPath, "keys") }
 // the active zone.
 func newZoneKeygenCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "zone-keygen [zone]",
-		Short: "Generate a DNSSEC keypair (KSK + ZSK, Ed25519) for a zone",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "zone-keygen [zone]",
+		Short:   "Generate a DNSSEC keypair (KSK + ZSK, Ed25519) for a zone",
+		Args:    cobra.MaximumNArgs(1),
 		Example: "  zonegit zone-keygen foo.com.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
@@ -234,9 +234,10 @@ func stageDNSSECScaffold(ctx context.Context, r *repo.Repo, keys *dnssec.ZoneKey
 				continue
 			}
 			var coveredRRs []dns.RR
-			if t == "DNSKEY" {
+			switch t {
+			case "DNSKEY":
 				coveredRRs = dnskeySet
-			} else if t == "NSEC" {
+			case "NSEC":
 				idx := sort.SearchStrings(names, owner)
 				next := names[(idx+1)%len(names)]
 				types := []string{}
@@ -249,7 +250,7 @@ func stageDNSSECScaffold(ctx context.Context, r *repo.Repo, keys *dnssec.ZoneKey
 					NextDomain: next,
 					TypeBitMap: typesToBitmap(types),
 				}}
-			} else {
+			default:
 				rsKey := stripZoneOwner(owner, zoneName)
 				rs, err := r.Lookup(ctx, head, rsKey, t)
 				if err != nil {
@@ -402,4 +403,3 @@ func treeOfCommit(ctx context.Context, s store.Storage, h store.Hash) store.Hash
 	}
 	return c.Tree
 }
-

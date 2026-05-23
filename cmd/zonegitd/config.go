@@ -17,11 +17,11 @@ import (
 // from the map are still served (with the defaults) since the daemon
 // auto-discovers zones via the reconciler.
 type daemonConfig struct {
-	DefaultBranch string                     `yaml:"default_branch,omitempty"`
-	DefaultAt     string                     `yaml:"at,omitempty"`
-	DefaultCanary string                     `yaml:"canary,omitempty"`
-	DefaultSalt   string                     `yaml:"canary_salt,omitempty"`
-	Zones         map[string]zoneRuleConfig  `yaml:"zones,omitempty"`
+	DefaultBranch string                    `yaml:"default_branch,omitempty"`
+	DefaultAt     string                    `yaml:"at,omitempty"`
+	DefaultCanary string                    `yaml:"canary,omitempty"`
+	DefaultSalt   string                    `yaml:"canary_salt,omitempty"`
+	Zones         map[string]zoneRuleConfig `yaml:"zones,omitempty"`
 }
 
 // zoneRuleConfig is the per-zone overlay. Empty fields fall through to
