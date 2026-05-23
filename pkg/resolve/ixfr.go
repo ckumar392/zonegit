@@ -132,15 +132,26 @@ func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	emitTransfer(w, req, rrs)
 }
 
-// findCommitBySOASerial walks the first-parent chain backward from head
-// looking for a commit whose apex SOA has the given serial.
+// findCommitBySOASerial searches the full commit DAG reachable from
+// head for a commit whose apex SOA has the given serial. Uses BFS with
+// a visited set so merge ancestors are considered, not just first
+// parents (a zone where serial N landed via a merge into a side branch
+// must still be IXFR-able from N).
 func findCommitBySOASerial(ctx context.Context, rp *repo.Repo, head store.Hash, serial uint32) (store.Hash, zone.RRset, error) {
-	cur := head
-	// Bound the walk: at most 10_000 commits backward. The bound exists
-	// purely to defend against malicious/corrupt commit chains.
-	for i := 0; i < 10000; i++ {
+	if head.IsZero() {
+		return store.ZeroHash, zone.RRset{}, fmt.Errorf("serial %d: head is zero", serial)
+	}
+	// Bound the walk at 10_000 commits to defend against pathological
+	// graphs. Real zone histories don't get anywhere near this.
+	const maxCommits = 10000
+	visited := make(map[store.Hash]bool, 64)
+	queue := []store.Hash{head}
+	visited[head] = true
+	for len(queue) > 0 && len(visited) < maxCommits {
+		cur := queue[0]
+		queue = queue[1:]
 		if cur.IsZero() {
-			break
+			continue
 		}
 		soaSet, err := rp.Lookup(ctx, cur, "@", "SOA")
 		if err == nil && len(soaSet.RRs) == 1 {
@@ -156,12 +167,14 @@ func findCommitBySOASerial(ctx context.Context, rp *repo.Repo, head store.Hash, 
 		if err != nil {
 			return store.ZeroHash, zone.RRset{}, err
 		}
-		if len(c.Parents) == 0 {
-			break
+		for _, p := range c.Parents {
+			if !visited[p] {
+				visited[p] = true
+				queue = append(queue, p)
+			}
 		}
-		cur = c.Parents[0]
 	}
-	return store.ZeroHash, zone.RRset{}, fmt.Errorf("serial %d not in first-parent history", serial)
+	return store.ZeroHash, zone.RRset{}, fmt.Errorf("serial %d not in reachable history (walked %d commits)", serial, len(visited))
 }
 
 // clientIXFRSerial extracts the SOA serial from an IXFR query's

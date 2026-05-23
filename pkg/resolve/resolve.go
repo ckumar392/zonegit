@@ -174,6 +174,9 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 	switch {
 	case err == nil:
 		resp.Answer = append(resp.Answer, rs.RRs...)
+		if dnssecOK(req) {
+			r.attachRRSIG(ctx, rp, head, rel, q.Qtype, resp)
+		}
 		r.attachSOA(ctx, rp, head, resp)
 	case errors.Is(err, store.ErrNotFound):
 		if r.nameExists(ctx, rp, head, rel) {
@@ -185,6 +188,30 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 	default:
 		log.Printf("resolve: lookup %s %s: %v", rel, qtype, err)
 		resp.Rcode = dns.RcodeServerFailure
+	}
+}
+
+// dnssecOK reports whether the requester set the DNSSEC-OK (DO) bit in
+// the OPT pseudo-record. When set, RFC 4035 §3.2.1 requires the server
+// to include the relevant RRSIG(s) alongside the answer.
+func dnssecOK(req *dns.Msg) bool {
+	opt := req.IsEdns0()
+	return opt != nil && opt.Do()
+}
+
+// attachRRSIG looks up the RRSIG RRset at the answer's owner and
+// appends any RRSIG whose TypeCovered matches the query type. Multiple
+// RRsets at the same owner each contribute one RRSIG, all stored
+// together as a single RRSIG RRset in the object model.
+func (r *Resolver) attachRRSIG(ctx context.Context, rp *repo.Repo, head store.Hash, rel string, qtype uint16, resp *dns.Msg) {
+	sigSet, err := rp.Lookup(ctx, head, rel, "RRSIG")
+	if err != nil {
+		return // no RRSIG present — zone isn't signed
+	}
+	for _, rr := range sigSet.RRs {
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == qtype {
+			resp.Answer = append(resp.Answer, sig)
+		}
 	}
 }
 

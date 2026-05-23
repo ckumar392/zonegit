@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -154,20 +155,28 @@ func main() {
 		return h
 	}
 
+	// activeConfig is read by the reconciler on every tick. SIGHUP
+	// atomically swaps it so config reloads take effect on the next tick
+	// without restarting the daemon.
+	var activeConfig atomic.Pointer[daemonConfig]
+	activeConfig.Store(cfgFile)
+
 	// Build the reconciler that owns the dns.HandleFunc registrations and
 	// the snapshotter's watched-ref list. Called once at startup, then
-	// periodically so zones added at runtime (`zonegit zone add ...`) get
-	// picked up without restarting the daemon.
+	// periodically so zones added at runtime (`zonegit zone add ...`)
+	// and config edits (SIGHUP) are picked up without restarting.
 	zoneFilter := canonZone(*zoneFlag) // "" → all zones
 	reconcileMu := &sync.Mutex{}
-	registered := map[string]bool{}
+	// registered tracks both presence AND the rule used to register —
+	// so a SIGHUP-driven config change for a zone re-registers it with
+	// the new settings.
+	registered := map[string]zoneRuleConfig{}
 	reconcile := func() {
 		// Open a fresh read-only repo every tick. We cannot reuse
 		// snap.Snapshot() here because the snapshotter's cached handle is
 		// only refreshed when a watched ref changes — and zone-marker refs
-		// are NOT watched (they don't affect query answers, only the set
-		// of zones to register handlers for). Opening fresh costs one
-		// Badger Open per second; acceptable for the discovery path.
+		// are NOT watched. Opening fresh costs one Badger Open per
+		// second; acceptable for the discovery path.
 		rp, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
 		if err != nil {
 			return
@@ -187,6 +196,8 @@ func main() {
 			}
 		}
 
+		cur := activeConfig.Load()
+
 		reconcileMu.Lock()
 		defer reconcileMu.Unlock()
 
@@ -196,7 +207,7 @@ func main() {
 		}
 		refsToWatch := make([]string, 0, len(desired)*2)
 		for _, z := range desired {
-			rule := cfgFile.ruleFor(z)
+			rule := cur.ruleFor(z)
 			refsToWatch = append(refsToWatch, refs.BranchRef(z, rule.Branch))
 
 			var router resolve.Router
@@ -210,8 +221,16 @@ func main() {
 				}
 			}
 
-			if registered[z] {
-				continue
+			// If the zone is already registered with the same rule,
+			// nothing to do. Different rule (e.g. SIGHUP changed canary
+			// pct or pinned --at) → unregister and re-register.
+			if existing, ok := registered[z]; ok {
+				if existing == rule {
+					continue
+				}
+				dns.HandleRemove(z)
+				delete(registered, z)
+				log.Printf("zonegitd: re-registering zone %s (%s → %s)", z, existing, rule)
 			}
 			cfg := resolve.Config{
 				Zone:          z,
@@ -222,7 +241,7 @@ func main() {
 			}
 			r := resolve.New(snap, cfg)
 			dns.HandleFunc(z, r.HandleWithRemote)
-			registered[z] = true
+			registered[z] = rule
 			log.Printf("zonegitd: registered zone %s (%s)", z, rule)
 		}
 		for z := range registered {
@@ -282,6 +301,37 @@ func main() {
 			log.Printf("zonegitd: metrics on %s/metrics", *metricsListen)
 			if err := http.ListenAndServe(*metricsListen, mux); err != nil {
 				log.Printf("metrics listener: %v", err)
+			}
+		}()
+	}
+
+	// SIGHUP: reload --config without restarting. Falls back to the
+	// originally-loaded config if the new file is unparseable.
+	if *configPath != "" {
+		sighup := make(chan os.Signal, 1)
+		signal.Notify(sighup, syscall.SIGHUP)
+		go func() {
+			for range sighup {
+				newCfg, err := loadDaemonConfig(*configPath)
+				if err != nil {
+					log.Printf("zonegitd: SIGHUP: reload failed, keeping previous config: %v", err)
+					continue
+				}
+				// Preserve CLI-flag-derived defaults the same way startup did.
+				if newCfg.DefaultBranch == "" {
+					newCfg.DefaultBranch = *branch
+				}
+				if newCfg.DefaultAt == "" {
+					newCfg.DefaultAt = *atRefish
+				}
+				if newCfg.DefaultCanary == "" {
+					newCfg.DefaultCanary = *canarySpec
+				}
+				if newCfg.DefaultSalt == "" {
+					newCfg.DefaultSalt = *canarySalt
+				}
+				activeConfig.Store(newCfg)
+				log.Printf("zonegitd: SIGHUP: config reloaded from %s (next reconciler tick will apply changes)", *configPath)
 			}
 		}()
 	}
