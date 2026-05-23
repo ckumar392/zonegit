@@ -6,6 +6,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
