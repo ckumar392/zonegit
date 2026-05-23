@@ -164,18 +164,18 @@ func TestResolve(t *testing.T) {
 		refish string
 		want   store.Hash
 	}{
-		{c2.String(), c2},                   // full hex
-		{"main", c2},                        // bare branch — uses active zone
-		{"v1", c0},                          // bare tag — uses active zone
-		{"foo.com./main", c2},               // zone-qualified branch
-		{"foo.com./v1", c0},                 // zone-qualified tag
-		{"HEAD", c2},                        // HEAD
-		{"main~0", c2},                      // ~0 = self
-		{"main~1", c1},                      // parent
-		{"main~2", c0},                      // grandparent
-		{"HEAD~1", c1},                      // HEAD ancestor
-		{"refs/heads/foo.com./main", c2},    // full ref path
-		{"refs/tags/foo.com./v1", c0},       // full tag path
+		{c2.String(), c2},                // full hex
+		{"main", c2},                     // bare branch — uses active zone
+		{"v1", c0},                       // bare tag — uses active zone
+		{"foo.com./main", c2},            // zone-qualified branch
+		{"foo.com./v1", c0},              // zone-qualified tag
+		{"HEAD", c2},                     // HEAD
+		{"main~0", c2},                   // ~0 = self
+		{"main~1", c1},                   // parent
+		{"main~2", c0},                   // grandparent
+		{"HEAD~1", c1},                   // HEAD ancestor
+		{"refs/heads/foo.com./main", c2}, // full ref path
+		{"refs/tags/foo.com./v1", c0},    // full tag path
 	}
 	for _, tt := range tests {
 		t.Run(tt.refish, func(t *testing.T) {

@@ -25,9 +25,9 @@ func newZoneCmd() *cobra.Command {
 // via `--zone <name>` on subsequent ops, or by `zone switch <name>`.
 func newZoneAddCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "add <zone>",
-		Short: "Register a new zone in this repo (does not move HEAD)",
-		Args:  cobra.ExactArgs(1),
+		Use:     "add <zone>",
+		Short:   "Register a new zone in this repo (does not move HEAD)",
+		Args:    cobra.ExactArgs(1),
 		Example: "  zonegit zone add bar.com.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
@@ -80,9 +80,9 @@ func newZoneListCmd() *cobra.Command {
 // already exist (or be created via `branch <name>` first).
 func newZoneSwitchCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "switch <zone> [branch]",
-		Short: "Switch HEAD to a different zone (and optionally a branch within it)",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:     "switch <zone> [branch]",
+		Short:   "Switch HEAD to a different zone (and optionally a branch within it)",
+		Args:    cobra.RangeArgs(1, 2),
 		Example: "  zonegit zone switch bar.com. main",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()

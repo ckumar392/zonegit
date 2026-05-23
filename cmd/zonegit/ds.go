@@ -22,9 +22,9 @@ import (
 // new deployments since 2014.
 func newDSCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ds [zone]",
-		Short: "Print the DS record for the zone's KSK (paste into parent zone)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "ds [zone]",
+		Short:   "Print the DS record for the zone's KSK (paste into parent zone)",
+		Args:    cobra.MaximumNArgs(1),
 		Example: "  zonegit ds foo.com.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := openRepo()
