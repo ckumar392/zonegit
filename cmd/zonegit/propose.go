@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/ckumar392/zonegit/pkg/refs"
 )
 
 // newProposeCmd implements `zonegit propose <name> [--from main]`.
@@ -44,13 +42,17 @@ api-failover'. Under the hood this is 'branch + checkout'.`,
 			if err != nil {
 				return fmt.Errorf("propose: resolve --from %q: %w", from, err)
 			}
-			if err := r.Refs().CreateBranch(ctx, name, start); err != nil {
+			zoneName, _, _, err := r.Head(ctx)
+			if err != nil {
+				return fmt.Errorf("propose: read HEAD: %w", err)
+			}
+			if err := r.Refs().CreateBranch(ctx, zoneName, name, start); err != nil {
 				return fmt.Errorf("propose: create %s: %w", name, err)
 			}
-			if err := r.Refs().SetHEAD(ctx, refs.BranchPrefix+name); err != nil {
+			if err := r.SwitchZone(ctx, zoneName, name); err != nil {
 				return fmt.Errorf("propose: checkout %s: %w", name, err)
 			}
-			fmt.Printf("proposal %q created from %s (HEAD now on %s)\n", name, start.Short(), name)
+			fmt.Printf("proposal %q created from %s (HEAD now on %s/%s)\n", name, start.Short(), zoneName, name)
 			return nil
 		},
 	}
@@ -84,7 +86,11 @@ aborts and the proposal stays open for further edits.`,
 			defer r.Close()
 			ctx := context.Background()
 
-			if err := r.Refs().SetHEAD(ctx, refs.BranchPrefix+into); err != nil {
+			zoneName, _, _, err := r.Head(ctx)
+			if err != nil {
+				return fmt.Errorf("approve: read HEAD: %w", err)
+			}
+			if err := r.SwitchZone(ctx, zoneName, into); err != nil {
 				return fmt.Errorf("approve: checkout %s: %w", into, err)
 			}
 			res, err := r.Merge(ctx, proposal, authorIdentity(), msg)

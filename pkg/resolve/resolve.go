@@ -121,7 +121,8 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 		resp.Rcode = dns.RcodeServerFailure
 		return
 	}
-	rp.SetZone(r.cfg.Zone)
+	// The resolver owns its own zone identity (set at construction); the
+	// Repo handle is shared across all zones served from this snapshotter.
 
 	// AXFR is a separate animal: it streams instead of producing a single
 	// response, so we never get to the leaf-walk path below.
@@ -185,6 +186,8 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 
 // resolveHead returns the commit hash to answer this query against,
 // honoring (in order): PinnedAt, the Router's choice, the default branch.
+//
+// The branch lookup is scoped to the resolver's zone (refs/heads/<zone>/<branch>).
 func (r *Resolver) resolveHead(ctx context.Context, rp *repo.Repo, q dns.Question, qname string) (store.Hash, error) {
 	if !r.cfg.PinnedAt.IsZero() {
 		return r.cfg.PinnedAt, nil
@@ -201,7 +204,11 @@ func (r *Resolver) resolveHead(ctx context.Context, rp *repo.Repo, q dns.Questio
 			branch = b
 		}
 	}
-	return rp.Resolve(ctx, "refs/heads/"+branch)
+	h, err := rp.Refs().GetBranch(ctx, r.cfg.Zone, branch)
+	if err != nil {
+		return store.ZeroHash, err
+	}
+	return h, nil
 }
 
 // nameExists probes a small set of common types to classify NXDOMAIN vs

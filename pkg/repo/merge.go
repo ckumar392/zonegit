@@ -50,16 +50,16 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 		return MergeResult{}, fmt.Errorf("merge: refusing to merge with %d staged changes", len(r.staging))
 	}
 
-	branch, ours, err := r.refs.ReadHEAD(ctx)
+	zoneName, branchName, ours, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("merge: read HEAD: %w", err)
 	}
-	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
-	if strings.TrimPrefix(theirsBranch, refs.BranchPrefix) == branchName {
+	theirsName := strings.TrimPrefix(theirsBranch, refs.BranchPrefix)
+	if theirsName == branchName {
 		return MergeResult{}, fmt.Errorf("merge: cannot merge a branch into itself")
 	}
 
-	theirs, err := r.refs.GetBranch(ctx, strings.TrimPrefix(theirsBranch, refs.BranchPrefix))
+	theirs, err := r.refs.GetBranch(ctx, zoneName, theirsName)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("merge: %w", err)
 	}
@@ -75,13 +75,15 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 		}
 	}
 
+	branchRef := refs.BranchRef(zoneName, branchName)
+
 	// Fast-forward?
 	if ours.IsZero() {
 		// Orphan branch: just point it at theirs.
-		if err := r.refs.CreateBranch(ctx, branchName, theirs); err != nil {
+		if err := r.refs.CreateBranch(ctx, zoneName, branchName, theirs); err != nil {
 			return MergeResult{}, fmt.Errorf("merge: ff create %s: %w", branchName, err)
 		}
-		_ = r.refs.AppendReflog(ctx, branch, ours, theirs, author.String(), "merge", "fast-forward "+theirsBranch)
+		_ = r.refs.AppendReflog(ctx, branchRef, ours, theirs, author.String(), "merge", "fast-forward "+theirsName)
 		return MergeResult{FastForward: true, Commit: theirs}, nil
 	}
 	ff, err := isAncestor(ctx, r.storage, ours, theirs)
@@ -89,10 +91,10 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 		return MergeResult{}, err
 	}
 	if ff {
-		if err := r.refs.UpdateBranch(ctx, branchName, ours, theirs); err != nil {
+		if err := r.refs.UpdateBranch(ctx, zoneName, branchName, ours, theirs); err != nil {
 			return MergeResult{}, fmt.Errorf("merge: ff %s: %w", branchName, err)
 		}
-		_ = r.refs.AppendReflog(ctx, branch, ours, theirs, author.String(), "merge", "fast-forward "+theirsBranch)
+		_ = r.refs.AppendReflog(ctx, branchRef, ours, theirs, author.String(), "merge", "fast-forward "+theirsName)
 		return MergeResult{FastForward: true, Commit: theirs}, nil
 	}
 
@@ -115,7 +117,7 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	}
 
 	if msg == "" {
-		msg = fmt.Sprintf("Merge branch '%s' into %s", strings.TrimPrefix(theirsBranch, refs.BranchPrefix), branchName)
+		msg = fmt.Sprintf("Merge branch '%s' into %s", theirsName, branchName)
 	}
 	now := time.Now()
 	c := object.Commit{
@@ -131,10 +133,10 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	if err := r.storage.PutObject(ctx, commitHash, commitObj); err != nil {
 		return MergeResult{}, err
 	}
-	if err := r.refs.UpdateBranch(ctx, branchName, ours, commitHash); err != nil {
+	if err := r.refs.UpdateBranch(ctx, zoneName, branchName, ours, commitHash); err != nil {
 		return MergeResult{}, fmt.Errorf("merge: advance %s: %w", branchName, err)
 	}
-	_ = r.refs.AppendReflog(ctx, branch, ours, commitHash, author.String(), "merge", msg)
+	_ = r.refs.AppendReflog(ctx, branchRef, ours, commitHash, author.String(), "merge", msg)
 	return MergeResult{Commit: commitHash}, nil
 }
 
@@ -274,13 +276,14 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 		parentTree = pc.Tree
 	}
 
-	branch, head, err := r.refs.ReadHEAD(ctx)
+	zoneName, branchName, head, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("revert: read HEAD: %w", err)
 	}
 	if head.IsZero() {
 		return store.ZeroHash, fmt.Errorf("revert: HEAD is empty")
 	}
+	branchRef := refs.BranchRef(zoneName, branchName)
 	headCommit, err := loadCommit(ctx, r.storage, head)
 	if err != nil {
 		return store.ZeroHash, err
@@ -338,11 +341,10 @@ func (r *Repo) Revert(ctx context.Context, refish string, author object.Identity
 	if err := r.storage.PutObject(ctx, commitHash, commitObj); err != nil {
 		return store.ZeroHash, err
 	}
-	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
-	if err := r.refs.UpdateBranch(ctx, branchName, head, commitHash); err != nil {
+	if err := r.refs.UpdateBranch(ctx, zoneName, branchName, head, commitHash); err != nil {
 		return store.ZeroHash, fmt.Errorf("revert: advance %s: %w", branchName, err)
 	}
-	_ = r.refs.AppendReflog(ctx, branch, head, commitHash, author.String(), "revert", msg)
+	_ = r.refs.AppendReflog(ctx, branchRef, head, commitHash, author.String(), "revert", msg)
 	return commitHash, nil
 }
 
@@ -359,28 +361,26 @@ func (r *Repo) ResetHard(ctx context.Context, refish string, author object.Ident
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("reset: resolve %q: %w", refish, err)
 	}
-	branch, head, err := r.refs.ReadHEAD(ctx)
+	zoneName, branchName, head, err := r.refs.ReadHEAD(ctx)
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("reset: read HEAD: %w", err)
 	}
-	branchName := strings.TrimPrefix(branch, refs.BranchPrefix)
 
 	if head == target {
-		// Even a no-op clears staging.
 		r.staging = make(map[stagingKey]stagingValue)
 		return target, nil
 	}
 
 	if head.IsZero() {
-		if err := r.refs.CreateBranch(ctx, branchName, target); err != nil {
+		if err := r.refs.CreateBranch(ctx, zoneName, branchName, target); err != nil {
 			return store.ZeroHash, fmt.Errorf("reset: create %s: %w", branchName, err)
 		}
 	} else {
-		if err := r.refs.UpdateBranch(ctx, branchName, head, target); err != nil {
+		if err := r.refs.UpdateBranch(ctx, zoneName, branchName, head, target); err != nil {
 			return store.ZeroHash, fmt.Errorf("reset: move %s: %w", branchName, err)
 		}
 	}
-	_ = r.refs.AppendReflog(ctx, branch, head, target, author.String(), "reset", "reset --hard "+refish)
+	_ = r.refs.AppendReflog(ctx, refs.BranchRef(zoneName, branchName), head, target, author.String(), "reset", "reset --hard "+refish)
 	r.staging = make(map[stagingKey]stagingValue)
 	return target, nil
 }

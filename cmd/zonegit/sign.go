@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -80,13 +79,12 @@ func newSignCommitCmd() *cobra.Command {
 
 			// If refish was a branch tip, move it. Otherwise just print the
 			// new hash; the user can promote it manually.
-			branch, headHash, err := r.Refs().ReadHEAD(ctx)
+			zoneName, branch, headHash, err := r.Refs().ReadHEAD(ctx)
 			if err == nil && headHash == h {
-				name := strings.TrimPrefix(branch, refs.BranchPrefix)
-				if err := r.Refs().UpdateBranch(ctx, name, h, newH); err != nil {
+				if err := r.Refs().UpdateBranch(ctx, zoneName, branch, h, newH); err != nil {
 					return fmt.Errorf("sign-commit: move branch: %w", err)
 				}
-				_ = r.Refs().AppendReflog(ctx, branch, h, newH, signed.Author.String(), "sign", "ed25519 sign")
+				_ = r.Refs().AppendReflog(ctx, refs.BranchRef(zoneName, branch), h, newH, signed.Author.String(), "sign", "ed25519 sign")
 			}
 			fmt.Printf("signed %s -> %s\n", h.Short(), newH.Short())
 			return nil

@@ -27,16 +27,16 @@ func TestMerge_FastForward(t *testing.T) {
 	r := newMemRepo(t)
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "c1")
 
-	_, c1, _ := r.Head(ctx())
-	if err := r.Refs().CreateBranch(ctx(), "dev", c1); err != nil {
+	_, _, c1, _ := r.Head(ctx())
+	if err := r.Refs().CreateBranch(ctx(), "foo.com.", "dev", c1); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"dev"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "dev"); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "www.foo.com.", "5.6.7.8", "c2")
 
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"main"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "main"); err != nil {
 		t.Fatal(err)
 	}
 	res, err := r.Merge(ctx(), "dev", alice, "")
@@ -46,8 +46,8 @@ func TestMerge_FastForward(t *testing.T) {
 	if !res.FastForward {
 		t.Fatalf("expected fast-forward, got %+v", res)
 	}
-	_, head, _ := r.Head(ctx())
-	devTip, _ := r.Refs().GetBranch(ctx(), "dev")
+	_, _, head, _ := r.Head(ctx())
+	devTip, _ := r.Refs().GetBranch(ctx(), "foo.com.", "dev")
 	if head != devTip {
 		t.Errorf("main not advanced to dev tip")
 	}
@@ -56,8 +56,8 @@ func TestMerge_FastForward(t *testing.T) {
 func TestMerge_AlreadyUpToDate(t *testing.T) {
 	r := newMemRepo(t)
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "c1")
-	_, c1, _ := r.Head(ctx())
-	if err := r.Refs().CreateBranch(ctx(), "dev", c1); err != nil {
+	_, _, c1, _ := r.Head(ctx())
+	if err := r.Refs().CreateBranch(ctx(), "foo.com.", "dev", c1); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "www.foo.com.", "5.6.7.8", "c2")
@@ -74,17 +74,17 @@ func TestMerge_AlreadyUpToDate(t *testing.T) {
 func TestMerge_ThreeWayClean(t *testing.T) {
 	r := newMemRepo(t)
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "base")
-	_, base, _ := r.Head(ctx())
+	_, _, base, _ := r.Head(ctx())
 
-	if err := r.Refs().CreateBranch(ctx(), "dev", base); err != nil {
+	if err := r.Refs().CreateBranch(ctx(), "foo.com.", "dev", base); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"dev"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "dev"); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "www.foo.com.", "5.6.7.8", "dev: add www")
 
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"main"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "main"); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "mail.foo.com.", "9.9.9.9", "main: add mail")
@@ -99,7 +99,7 @@ func TestMerge_ThreeWayClean(t *testing.T) {
 	if res.Commit.IsZero() {
 		t.Fatal("expected non-zero merge commit")
 	}
-	_, head, _ := r.Head(ctx())
+	_, _, head, _ := r.Head(ctx())
 	if _, err := r.Lookup(ctx(), head, "www", "A"); err != nil {
 		t.Errorf("www should exist: %v", err)
 	}
@@ -111,21 +111,21 @@ func TestMerge_ThreeWayClean(t *testing.T) {
 func TestMerge_Conflict(t *testing.T) {
 	r := newMemRepo(t)
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "base")
-	_, base, _ := r.Head(ctx())
+	_, _, base, _ := r.Head(ctx())
 
-	if err := r.Refs().CreateBranch(ctx(), "dev", base); err != nil {
+	if err := r.Refs().CreateBranch(ctx(), "foo.com.", "dev", base); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"dev"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "dev"); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "api.foo.com.", "9.9.9.9", "dev: change api")
 
-	if err := r.Refs().SetHEAD(ctx(), refs.BranchPrefix+"main"); err != nil {
+	if err := r.Refs().SetHEAD(ctx(), "foo.com.", "main"); err != nil {
 		t.Fatal(err)
 	}
 	commitSet(t, r, "api.foo.com.", "7.7.7.7", "main: change api")
-	_, mainTip, _ := r.Head(ctx())
+	_, _, mainTip, _ := r.Head(ctx())
 
 	res, err := r.Merge(ctx(), "dev", alice, "merge dev")
 	if err != nil {
@@ -134,7 +134,7 @@ func TestMerge_Conflict(t *testing.T) {
 	if len(res.Conflicts) == 0 {
 		t.Fatalf("expected conflicts, got %+v", res)
 	}
-	_, head2, _ := r.Head(ctx())
+	_, _, head2, _ := r.Head(ctx())
 	if head2 != mainTip {
 		t.Errorf("main advanced despite conflicts")
 	}
@@ -145,7 +145,7 @@ func TestRevert(t *testing.T) {
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "v1")
 	commitSet(t, r, "api.foo.com.", "9.9.9.9", "v2")
 
-	_, head, _ := r.Head(ctx())
+	_, _, head, _ := r.Head(ctx())
 	rev, err := r.Revert(ctx(), "HEAD", alice, "")
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestRevert(t *testing.T) {
 	if rev.IsZero() {
 		t.Fatal("zero hash")
 	}
-	_, newHead, _ := r.Head(ctx())
+	_, _, newHead, _ := r.Head(ctx())
 	if newHead == head {
 		t.Fatal("HEAD did not advance")
 	}
@@ -169,7 +169,7 @@ func TestRevert(t *testing.T) {
 func TestResetHard(t *testing.T) {
 	r := newMemRepo(t)
 	commitSet(t, r, "api.foo.com.", "1.2.3.4", "v1")
-	_, c1, _ := r.Head(ctx())
+	_, _, c1, _ := r.Head(ctx())
 	commitSet(t, r, "api.foo.com.", "9.9.9.9", "v2")
 
 	target, err := r.ResetHard(ctx(), c1.String(), alice)
@@ -179,11 +179,11 @@ func TestResetHard(t *testing.T) {
 	if target != c1 {
 		t.Errorf("target = %s, want %s", target, c1)
 	}
-	_, head, _ := r.Head(ctx())
+	_, _, head, _ := r.Head(ctx())
 	if head != c1 {
 		t.Errorf("HEAD = %s, want %s", head, c1)
 	}
-	rl, err := r.Refs().ReadReflog(ctx(), refs.BranchPrefix+"main")
+	rl, err := r.Refs().ReadReflog(ctx(), refs.BranchRef("foo.com.", "main"))
 	if err != nil {
 		t.Fatal(err)
 	}
