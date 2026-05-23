@@ -76,6 +76,7 @@ func main() {
 		newZoneCmd(),
 		newSignZoneCmd(),
 		newZoneKeygenCmd(),
+		newDSCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -226,6 +227,7 @@ func newImportCmd() *cobra.Command {
 
 func newSetCmd() *cobra.Command {
 	var msg string
+	var autoSign bool
 	cmd := &cobra.Command{
 		Use:     "set <name> <type> <ttl> <rdata...>",
 		Short:   "Set an RRset and commit",
@@ -255,6 +257,11 @@ func newSetCmd() *cobra.Command {
 			if err := r.Set(ctx, rrs); err != nil {
 				return err
 			}
+			if autoSign {
+				if err := autoSignTouched(ctx, r, rrs); err != nil {
+					return fmt.Errorf("auto-sign: %w", err)
+				}
+			}
 			if msg == "" {
 				msg = fmt.Sprintf("set %s %s", name, rrtype)
 			}
@@ -267,6 +274,7 @@ func newSetCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&msg, "message", "m", "", "commit message")
+	cmd.Flags().BoolVar(&autoSign, "auto-sign", false, "re-sign touched RRsets in the same commit (requires zone-keygen first)")
 	return cmd
 }
 

@@ -269,7 +269,43 @@ run "dig +dnssec @127.0.0.1 -p $PORT api.$ZONE A | grep -E 'RRSIG|^api'"
 dim   "      The dig output above includes a real RRSIG with a non-zero signature."
 dim   "      A resolver with our KSK as a trust anchor would validate this chain end-to-end."
 
-step 21 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
+step 21 "DS record for parent zone" "publish-ready DS line; paste into the parent zone to complete the chain of trust"
+run "$BIN/zonegit --repo $REPO ds $ZONE"
+
+step 22 "--auto-sign on a set" "re-sign the touched RRset in the same commit, no separate sign-zone needed"
+run "$BIN/zonegit --repo $REPO set --auto-sign -m 'rotate api with auto-sign' api.$ZONE A 300 9.9.9.9"
+sleep 0.3
+dim   "      RRSIG for api.$ZONE A — note: signature value differs from the previous step because the RRset changed."
+run "dig +dnssec @127.0.0.1 -p $PORT api.$ZONE A | grep -E 'RRSIG|^api' | head -3"
+
+step 23 "CoreDNS plugin" "the same repo served via a custom CoreDNS binary"
+if [[ -x "$BIN/coredns" ]]; then
+  CORE_PORT="${CORE_PORT:-15370}"
+  COREFILE="$(mktemp /tmp/zonegit-demo-Corefile.XXXXXX)"
+  cat >"$COREFILE" <<EOF
+$ZONE:$CORE_PORT {
+    zonegit $REPO {
+        branch main
+    }
+    errors
+}
+EOF
+  "$BIN/coredns" -conf "$COREFILE" > /tmp/zonegit-demo-coredns.log 2>&1 &
+  CORE_PID=$!
+  sleep 1.5
+  dim   "      same repo, queried through CoreDNS instead of zonegitd:"
+  printf '  CoreDNS @ port %s :  ' "$CORE_PORT"
+  dig +short @127.0.0.1 -p "$CORE_PORT" "api.$ZONE" A
+  printf '  zonegitd @ port %s : ' "$PORT"
+  dig +short @127.0.0.1 -p "$PORT" "api.$ZONE" A
+  dim   "      identical answer — the plugin is a thin wrapper around pkg/resolve.Resolver."
+  kill "$CORE_PID" 2>/dev/null || true
+  wait "$CORE_PID" 2>/dev/null || true
+else
+  dim   "      bin/coredns not present. Build with: make coredns (first build pulls CoreDNS deps)."
+fi
+
+step 24 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
 run "curl -s http://127.0.0.1:$METRICS_PORT/metrics | head -20"
 
 echo
