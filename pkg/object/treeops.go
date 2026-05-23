@@ -66,6 +66,40 @@ func WalkTree(ctx context.Context, s store.Storage, root store.Hash, path []stri
 	return e.Hash, nil
 }
 
+// WalkAllLeaves visits every leaf (RRset) reachable from root in
+// depth-first, sorted order. The callback receives the labels path from
+// the zone apex down to (but excluding) the leaf, plus the leaf's name
+// (RR-type mnemonic) and blob hash.
+//
+// This is the enumeration AXFR and zone-export workflows need.
+func WalkAllLeaves(ctx context.Context, s store.Storage, root store.Hash, fn func(path []string, rrtype string, blobHash store.Hash) error) error {
+	if root.IsZero() {
+		return nil
+	}
+	return walkLeavesAt(ctx, s, nil, root, fn)
+}
+
+func walkLeavesAt(ctx context.Context, s store.Storage, path []string, h store.Hash, fn func([]string, string, store.Hash) error) error {
+	t, err := LoadTree(ctx, s, h)
+	if err != nil {
+		return err
+	}
+	for _, e := range t.Entries {
+		switch e.Kind {
+		case EntryLeaf:
+			if err := fn(path, e.Name, e.Hash); err != nil {
+				return err
+			}
+		case EntrySubtree:
+			sub := append(path[:len(path):len(path)], e.Name)
+			if err := walkLeavesAt(ctx, s, sub, e.Hash, fn); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // UpdateTree returns the new root hash of a tree where the leaf
 // (path, rrtype) is set to leafHash.
 //
