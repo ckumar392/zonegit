@@ -16,6 +16,10 @@ const (
 	HeadRef      = "HEAD"
 	BranchPrefix = "refs/heads/"
 	TagPrefix    = "refs/tags/"
+	// ZoneNameRef stores the canonical zone name (e.g. "foo.com.") as a
+	// length-prefixed ASCII string packed into a 32-byte ref slot. Zone
+	// names longer than HashSize-1 bytes are rejected at write time.
+	ZoneNameRef = "refs/zonegit/zone"
 )
 
 // DB wraps a store.Storage and provides higher-level ref operations:
@@ -100,6 +104,42 @@ func decodeBranchFromHash(h store.Hash) string {
 		return ""
 	}
 	return string(h[1 : 1+n])
+}
+
+// --- Zone metadata ---
+
+// WriteZoneName persists the canonical zone name in the repo so subsequent
+// CLI invocations and the daemon do not have to be told via --zone.
+//
+// The name is packed using the same length-prefixed scheme as HEAD's symbolic
+// ref; this avoids adding a new on-disk object kind. Zone names longer than
+// the available slot are rejected — that's fine for any reasonable
+// authoritative zone (the DNS apex name is well under the limit).
+func (db *DB) WriteZoneName(ctx context.Context, zone string) error {
+	if len(zone) > store.HashSize-1 {
+		return fmt.Errorf("WriteZoneName: zone %q too long (%d > %d)", zone, len(zone), store.HashSize-1)
+	}
+	packed := encodeBranchToHash(zone) // reuse the same length-prefix encoding
+	old, ok, err := db.s.GetRef(ctx, ZoneNameRef)
+	if err != nil {
+		return fmt.Errorf("WriteZoneName: %w", err)
+	}
+	if !ok {
+		return db.s.CASRef(ctx, ZoneNameRef, store.ZeroHash, packed)
+	}
+	return db.s.CASRef(ctx, ZoneNameRef, old, packed)
+}
+
+// ReadZoneName returns the persisted zone name, or "" if none is set.
+func (db *DB) ReadZoneName(ctx context.Context) (string, error) {
+	h, ok, err := db.s.GetRef(ctx, ZoneNameRef)
+	if err != nil {
+		return "", fmt.Errorf("ReadZoneName: %w", err)
+	}
+	if !ok {
+		return "", nil
+	}
+	return decodeBranchFromHash(h), nil
 }
 
 // --- Branches ---

@@ -13,6 +13,86 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.3.0] - 2026-05-23
+
+Demo-readiness milestone. Every claim the README makes now corresponds to
+running code (and a step in `make demo`). The five additions below are what
+moved this from "interesting weekend project" to "credible authority
+direction":
+
+### Added
+- **SOA serial auto-increment on commit** — `pkg/repo.Commit` now stages a
+  bumped apex SOA whenever any non-SOA RRset is mutated and the user has
+  not explicitly staged an SOA. Without this, the README's "no SOA dance"
+  pitch left secondaries with no way to know anything changed
+  ([pkg/repo/repo.go](pkg/repo/repo.go), [pkg/zone/soa.go](pkg/zone/soa.go)).
+- **`pkg/resolve`** — the DNS query path, extracted from `cmd/zonegitd`
+  into its own package per the architecture diagram. Provides
+  `Resolver.Handle`, `Resolver.HandleWithRemote`, AXFR streaming, and the
+  `Snapshotter`/`Router`/`MetricsHook` seams ([pkg/resolve](pkg/resolve)).
+- **Cached snapshotter** (`pkg/resolve.PollingSnapshotter`) — replaces the
+  v0/v1 per-query Badger reopen with a single cached handle invalidated
+  only when a watched branch's tip hash actually changes. Per-query cost
+  drops from one Badger Open to one atomic pointer load.
+- **Time-travel daemon** — `zonegitd --at <refish>` pins serving to a
+  historical commit. Any `dig` against that daemon answers as the zone
+  existed at that commit. The README's "what did this resolve to N
+  commits ago?" claim is now answerable by real DNS, not just a CLI
+  dump ([cmd/zonegitd/main.go](cmd/zonegitd/main.go)).
+- **Canary routing** — `zonegitd --canary canary:20` plus a tiny
+  subnet-bucket selector in `pkg/route` send X% of traffic (by stable
+  hash of the client `/24`) to a canary branch. Rollback is one ref
+  move ([pkg/route](pkg/route)). This is the v2 SELECTORS.md headline
+  use case (UC5) implemented in its smallest defensible form;
+  the full grammar remains a v3 milestone.
+- **AXFR** — full-zone transfer over TCP, RFC 5936 compliant
+  (leading + trailing SOA, RRsets in canonical tree-walk order). Makes
+  the "drop-in BIND replacement" claim real for primary-secondary
+  deployments ([pkg/resolve/axfr.go](pkg/resolve/axfr.go)).
+- **Prometheus metrics endpoint** — `--metrics-listen :9353` exposes
+  `zonegit_dns_queries_total{qtype,rcode}` and an active-branch info
+  gauge. Hand-rolled (no `client_golang` dep)
+  ([pkg/resolve/metrics.go](pkg/resolve/metrics.go)).
+- **Ed25519 commit signing** — `zonegit keygen`, `zonegit sign-commit`,
+  `zonegit verify [--chain]`. The signature header was already reserved
+  on the commit object; this adds the actual sign/verify primitive in
+  `pkg/sign` ([pkg/sign](pkg/sign)).
+- **PR-style change verbs** — `zonegit propose <name> --from main`,
+  `zonegit review <name> --into main`, `zonegit approve <name> --into main`.
+  Thin convenience over branch/diff/merge, but the vocabulary matches
+  how change-management SMEs actually talk
+  ([cmd/zonegit/propose.go](cmd/zonegit/propose.go)).
+- **Persisted zone metadata** — `zonegit init <zone>` writes the zone
+  name to `refs/zonegit/zone`. Subsequent CLI and daemon invocations
+  auto-load it, so `--zone` is now optional after the first
+  `init` ([pkg/refs/refs.go](pkg/refs/refs.go)).
+- **`object.WalkAllLeaves`** — depth-first leaf enumeration over a tree.
+  Powers AXFR; will also be the seam for zone-export and signed-zone
+  workflows ([pkg/object/treeops.go](pkg/object/treeops.go)).
+
+### Changed
+- The 15-step demo grew to 18 steps. Coverage now includes SOA
+  before/after observation, time-travel `dig`, canary bucket split,
+  AXFR, propose/approve, and a curl against `/metrics`
+  ([scripts/demo.sh](scripts/demo.sh)).
+- `cmd/zonegitd/main.go` shrank from ~260 LoC of inline DNS handling
+  down to ~150 LoC of flag parsing + wiring; the heavy lifting moved
+  into `pkg/resolve`.
+
+### Known limitations
+- AXFR is full-only — no IXFR (delta) yet. Secondaries with a primary
+  pointing at `zonegitd` re-AXFR on every NOTIFY. v4 will add IXFR
+  over the existing commit-diff plumbing in `pkg/history`.
+- The selector engine in `pkg/route` is one rule shape
+  (`hash(client.subnet, salt) % 100 < pct`). The full SELECTORS.md
+  grammar (geo, ASN, time windows, list literals) remains a v3 item.
+- Snapshotter invalidates via a 200ms polling reopener — fine for the
+  demo and a small repo, but production deployments should switch to
+  fsnotify (`Badger`'s on-disk manifest) or writer-pushed signals.
+- Commit signing is file-keyed; no KMS yet, no server-side
+  "refuse unsigned" policy yet. Both are slated for the next
+  milestone.
+
 ## [0.2.0] - 2026-04-27
 
 v1 milestone: branches mean something at serve time, plus three-way

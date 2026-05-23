@@ -1,34 +1,41 @@
-// Command zonegitd is a minimal authoritative DNS responder backed by a zonegit
-// repository. It always serves the current HEAD of the configured branch.
+// Command zonegitd is the authoritative DNS responder backed by a zonegit
+// repository.
 //
-// Scope (v0):
+// Scope:
 //   - UDP + TCP listener
-//   - One zone per process (--zone)
-//   - Answers from HEAD; SOA + NS at apex
-//   - NODATA / NXDOMAIN distinction is best-effort (NODATA when name has any
-//     RRtype, otherwise NXDOMAIN). DNSSEC, AXFR, NOTIFY are out of scope.
+//   - One zone per process (--zone, auto-loaded from the repo if persisted)
+//   - Serves the HEAD of --branch by default
+//   - --at <refish> pins serving to a historical commit (time-travel)
+//   - --canary <branch>:<pct> splits traffic between --branch and a canary
+//   - Responds to AXFR with the full zone
+//   - Optional /metrics endpoint
+//
+// Hot reload: the daemon does NOT reopen Badger per query. A background
+// poller (pkg/resolve.PollingSnapshotter) reopens the read-only handle
+// only when a watched branch's tip hash changes. Per-query cost is one
+// atomic pointer load.
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
 
 	"github.com/ckumar392/zonegit/pkg/repo"
+	"github.com/ckumar392/zonegit/pkg/resolve"
+	"github.com/ckumar392/zonegit/pkg/route"
 	"github.com/ckumar392/zonegit/pkg/store"
 )
 
-// Build-time metadata, populated via -ldflags by goreleaser.
 var (
 	version = "dev"
 	commit  = "none"
@@ -37,11 +44,15 @@ var (
 
 func main() {
 	var (
-		repoPath    = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
-		zone        = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (e.g. foo.com.)")
-		listen      = flag.String("listen", "127.0.0.1:5353", "address to listen on (UDP+TCP)")
-		branch      = flag.String("branch", "main", "branch to serve")
-		showVersion = flag.Bool("version", false, "print version and exit")
+		repoPath      = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
+		zoneFlag      = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (auto-loaded from repo if persisted)")
+		listen        = flag.String("listen", "127.0.0.1:5353", "DNS listen address (UDP+TCP)")
+		branch        = flag.String("branch", "main", "branch to serve")
+		atRefish      = flag.String("at", "", "if set, pin serving to this historical commit (refish: hash, branch, HEAD~N, tag)")
+		canarySpec    = flag.String("canary", "", "canary spec, e.g. \"canary:20\" — sends 20% of traffic (by client /24) to the 'canary' branch")
+		canarySalt    = flag.String("canary-salt", "zonegit", "hash salt for canary bucketing")
+		metricsListen = flag.String("metrics-listen", "", "if set (e.g. \":9353\"), serve Prometheus metrics on this address")
+		showVersion   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -50,34 +61,91 @@ func main() {
 		return
 	}
 
-	if *zone == "" {
-		fatal("--zone is required")
+	// Resolve the zone: explicit flag wins; otherwise read from the repo.
+	zoneName := *zoneFlag
+	if zoneName == "" {
+		r, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
+		if err != nil {
+			fatal("open repo: %v", err)
+		}
+		zoneName = r.Zone()
+		_ = r.Close()
+		if zoneName == "" {
+			fatal("--zone is required (and no zone is persisted in the repo)")
+		}
 	}
-	if !strings.HasSuffix(*zone, ".") {
-		*zone += "."
+	if !strings.HasSuffix(zoneName, ".") {
+		zoneName += "."
+	}
+	zoneName = strings.ToLower(zoneName)
+
+	// Determine which branches the snapshotter needs to watch.
+	watched := []string{*branch}
+	var router resolve.Router
+	if *canarySpec != "" {
+		br, err := route.NewBucketRouter(*branch, *canarySpec, *canarySalt)
+		if err != nil {
+			fatal("parse canary: %v", err)
+		}
+		router = br
+		watched = append(watched, br.CanaryBranch)
 	}
 
-	r, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
+	snap, err := resolve.NewPollingSnapshotter(*repoPath, watched, 200*time.Millisecond)
 	if err != nil {
-		fatal("open repo: %v", err)
+		fatal("snapshotter: %v", err)
 	}
-	defer r.Close()
-	r.SetZone(*zone)
+	defer snap.Close()
 
-	srv := &server{
-		repoPath: *repoPath,
-		zone:     strings.ToLower(*zone),
-		branch:   *branch,
-		repo:     r,
+	// Time-travel: resolve --at once at startup and pin the resolver to it.
+	var pinned store.Hash
+	if *atRefish != "" {
+		probe, err := snap.Snapshot()
+		if err != nil {
+			fatal("resolve --at: snapshot: %v", err)
+		}
+		h, err := probe.Resolve(context.Background(), *atRefish)
+		if err != nil {
+			fatal("resolve --at %q: %v", *atRefish, err)
+		}
+		pinned = h
 	}
 
-	dns.HandleFunc(*zone, srv.handle)
+	metrics := resolve.NewMetrics()
+	if pinned.IsZero() {
+		if *canarySpec != "" {
+			metrics.SetActiveBranch(fmt.Sprintf("%s + %s", *branch, *canarySpec))
+		} else {
+			metrics.SetActiveBranch(*branch)
+		}
+	} else {
+		metrics.SetActiveBranch("pinned@" + pinned.Short())
+	}
+
+	cfg := resolve.Config{
+		Zone:          zoneName,
+		DefaultBranch: *branch,
+		PinnedAt:      pinned,
+		Router:        router,
+		MetricsHook:   metrics,
+	}
+	r := resolve.New(snap, cfg)
+
+	dns.HandleFunc(zoneName, r.HandleWithRemote)
 
 	udp := &dns.Server{Addr: *listen, Net: "udp"}
 	tcp := &dns.Server{Addr: *listen, Net: "tcp"}
 
+	switch {
+	case !pinned.IsZero():
+		log.Printf("zonegitd: serving zone %s from %s on %s (pinned at %s)", zoneName, *repoPath, *listen, pinned.Short())
+	case router != nil:
+		log.Printf("zonegitd: serving zone %s from %s on %s (default=%s, canary=%s)", zoneName, *repoPath, *listen, *branch, *canarySpec)
+	default:
+		log.Printf("zonegitd: serving zone %s from %s on %s (branch=%s)", zoneName, *repoPath, *listen, *branch)
+	}
+
 	go func() {
-		log.Printf("zonegitd: serving zone %s from %s on %s/udp", *zone, *repoPath, *listen)
 		if err := udp.ListenAndServe(); err != nil {
 			fatal("udp listener: %v", err)
 		}
@@ -88,6 +156,20 @@ func main() {
 		}
 	}()
 
+	if *metricsListen != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metrics)
+		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, "zonegitd %s — /metrics for stats\n", version)
+		})
+		go func() {
+			log.Printf("zonegitd: metrics on %s/metrics", *metricsListen)
+			if err := http.ListenAndServe(*metricsListen, mux); err != nil {
+				log.Printf("metrics listener: %v", err)
+			}
+		}()
+	}
+
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	<-sigc
@@ -96,155 +178,6 @@ func main() {
 	defer cancel()
 	_ = udp.ShutdownContext(ctx)
 	_ = tcp.ShutdownContext(ctx)
-}
-
-type server struct {
-	repoPath string
-	zone     string // lowercase, trailing dot
-	branch   string
-
-	mu   sync.Mutex
-	repo *repo.Repo // current read-only handle, swapped on demand
-}
-
-// snapshot returns a Repo whose Badger handle was opened after lastHead was
-// observed; it closes the previous handle. This is how the daemon picks up
-// writes without restart. Cost: a Badger Open (~10–50 ms on a small repo).
-func (s *server) snapshot() (*repo.Repo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := repo.Open(repo.Options{Path: s.repoPath, ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	r.SetZone(s.zone)
-	old := s.repo
-	s.repo = r
-	if old != nil {
-		_ = old.Close()
-	}
-	return r, nil
-}
-
-func (s *server) handle(w dns.ResponseWriter, req *dns.Msg) {
-	resp := new(dns.Msg)
-	resp.SetReply(req)
-	resp.Authoritative = true
-	resp.RecursionAvailable = false
-
-	if len(req.Question) == 0 {
-		resp.Rcode = dns.RcodeFormatError
-		_ = w.WriteMsg(resp)
-		return
-	}
-	q := req.Question[0]
-	qname := strings.ToLower(dns.Fqdn(q.Name))
-
-	// Reject queries outside our zone.
-	if !strings.HasSuffix(qname, s.zone) {
-		resp.Rcode = dns.RcodeRefused
-		_ = w.WriteMsg(resp)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// Re-open the read-only Badger handle for each query so we pick up any
-	// commits made by the writer process. Cheap enough for v0; a real
-	// deployment would use SIGHUP-triggered reload or Badger Subscribe.
-	r, err := s.snapshot()
-	if err != nil {
-		log.Printf("zonegitd: snapshot: %v", err)
-		resp.Rcode = dns.RcodeServerFailure
-		_ = w.WriteMsg(resp)
-		return
-	}
-
-	// Resolve HEAD of branch.
-	head, err := r.Resolve(ctx, "refs/heads/"+s.branch)
-	if err != nil {
-		log.Printf("zonegitd: resolve %s: %v", s.branch, err)
-		resp.Rcode = dns.RcodeServerFailure
-		_ = w.WriteMsg(resp)
-		return
-	}
-
-	rel := strings.TrimSuffix(qname, "."+s.zone)
-	if qname == s.zone {
-		rel = "@"
-	}
-	qtype := dns.TypeToString[q.Qtype]
-
-	// CNAME first (RFC 1034 §3.6.2): a CNAME wins over any other type for
-	// non-CNAME queries, except when qtype == CNAME itself.
-	if q.Qtype != dns.TypeCNAME {
-		if cname, err := r.Lookup(ctx, head, rel, "CNAME"); err == nil {
-			resp.Answer = append(resp.Answer, cname.RRs...)
-			// In-zone CNAME chase (best-effort, single hop).
-			if len(cname.RRs) > 0 {
-				if c, ok := cname.RRs[0].(*dns.CNAME); ok {
-					target := strings.ToLower(dns.Fqdn(c.Target))
-					if strings.HasSuffix(target, s.zone) {
-						trel := strings.TrimSuffix(target, "."+s.zone)
-						if target == s.zone {
-							trel = "@"
-						}
-						if rs, err := r.Lookup(ctx, head, trel, qtype); err == nil {
-							resp.Answer = append(resp.Answer, rs.RRs...)
-						}
-					}
-				}
-			}
-			s.attachSOA(ctx, r, head, resp)
-			_ = w.WriteMsg(resp)
-			return
-		}
-	}
-
-	rs, err := r.Lookup(ctx, head, rel, qtype)
-	switch {
-	case err == nil:
-		resp.Answer = append(resp.Answer, rs.RRs...)
-		s.attachSOA(ctx, r, head, resp)
-	case errors.Is(err, store.ErrNotFound):
-		// Distinguish NODATA from NXDOMAIN: probe a few common types.
-		if s.nameExists(ctx, r, head, rel) {
-			// NODATA: name exists but no RRset of this type.
-			resp.Rcode = dns.RcodeSuccess
-		} else {
-			resp.Rcode = dns.RcodeNameError
-		}
-		s.attachSOA(ctx, r, head, resp)
-	default:
-		log.Printf("zonegitd: lookup %s %s: %v", rel, qtype, err)
-		resp.Rcode = dns.RcodeServerFailure
-	}
-
-	_ = w.WriteMsg(resp)
-}
-
-// nameExists probes a small set of common types to detect NODATA vs NXDOMAIN.
-// A more thorough check would walk the tree at this name; this is a v0
-// approximation sufficient for the demo.
-func (s *server) nameExists(ctx context.Context, r *repo.Repo, head store.Hash, rel string) bool {
-	for _, t := range []string{"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "PTR", "SOA"} {
-		if _, err := r.Lookup(ctx, head, rel, t); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *server) attachSOA(ctx context.Context, r *repo.Repo, head store.Hash, resp *dns.Msg) {
-	if len(resp.Answer) > 0 {
-		return // not needed in positive answer
-	}
-	soa, err := r.Lookup(ctx, head, "@", "SOA")
-	if err != nil {
-		return
-	}
-	resp.Ns = append(resp.Ns, soa.RRs...)
 }
 
 func envOr(key, def string) string {
