@@ -13,6 +13,70 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.6.0] - 2026-05-23
+
+Real DNSSEC + operational completeness. v0.6 turns the v0.5 DNSSEC
+scaffold into actual cryptographic signing (Ed25519, RFC 8080), adds
+SIGHUP-driven config reload so the daemon never needs to restart for a
+policy change, and fixes the IXFR walk to handle merge ancestors.
+
+### Added
+- **pkg/dnssec** — Ed25519 (algorithm 15, RFC 8080) keypair management
+  and RRSIG generation. `Generate()` mints a fresh KSK + ZSK,
+  `WriteToDir` / `LoadFromDir` persist them as base64 files, and
+  `SignRRset` wraps miekg/dns's `RRSIG.Sign` to produce signatures that
+  validate end-to-end. KSK signs DNSKEY; ZSK signs everything else
+  ([pkg/dnssec/dnssec.go](pkg/dnssec/dnssec.go)).
+- **`zonegit zone-keygen`** — generate and persist a zone's KSK + ZSK
+  under `<repo>/keys/`. One command per zone.
+- **`zonegit sign-zone` (real signing)** — when keys are present, emits
+  real RRSIGs over every RRset. NSEC chain regenerated, DNSKEYs at the
+  apex point at the loaded public keys. `--dry-run` remains for tests
+  and demos that don't want to roll keys.
+- **RRSIG-batching** — multiple RRsets at the same owner each get an
+  RRSIG; all of them are stored together as a single RRSIG RRset (one
+  blob per owner) so the existing `(owner, rrtype)` storage model
+  carries DNSSEC without schema changes.
+- **DO-bit-aware resolver** — when the requester sets the DNSSEC-OK
+  bit in the OPT pseudo-record, the resolver looks up the RRSIG RRset
+  at the answer's owner and appends any RRSIG whose `TypeCovered`
+  matches the query type. `dig +dnssec` now returns answer + RRSIG
+  inline ([pkg/resolve/resolve.go](pkg/resolve/resolve.go)).
+- **SIGHUP config reload** — `zonegitd` listens for SIGHUP, re-parses
+  `--config`, and atomically swaps it. The reconciler tracks the rule
+  each zone was registered with and re-registers only those whose
+  config actually changed. No restart, no dropped queries
+  ([cmd/zonegitd/main.go](cmd/zonegitd/main.go)).
+- **IXFR full-DAG walk** — `findCommitBySOASerial` now BFS-walks all
+  parents (not just first-parent), so an IXFR with a serial that
+  landed via a merge ancestor is still resolved correctly. Bounded at
+  10k commits to defend against pathological graphs
+  ([pkg/resolve/ixfr.go](pkg/resolve/ixfr.go)).
+
+### Changed
+- Demo step 20 now generates a real keypair, runs `sign-zone`, and
+  shows `dig +dnssec` returning an A + RRSIG (96-char Ed25519
+  signature, KSK key tag visible in the RRSIG header).
+- `cmd/zonegit/sign_zone.go` is now backed by `pkg/dnssec` for the
+  signing path; the placeholder mode (`--dry-run`) remains for tests.
+
+### Known limitations (deferred to v0.7)
+- **CoreDNS plugin** — the `pkg/resolve.Resolver` is plugin-shaped and
+  ready to wrap; the remaining work is the plugin scaffold, setup
+  function, and Corefile parser registration (~150 LoC + a Makefile
+  target that builds a `coredns-with-zonegit` binary). Slated as the
+  v0.7 headline so the "plug into your existing CoreDNS deployment"
+  story has running code behind it.
+- **Trust anchor publishing** — DS records for the apex KSK need to be
+  uploaded to the parent zone for true validation. A `zonegit ds`
+  helper that prints the DS record for the KSK is trivial to add and
+  will ship with v0.7.
+- **Automatic re-signing on commit** — today RRSIGs only refresh when
+  `sign-zone` is run. Resolvers won't accept signatures past their
+  expiration window. v0.7 adds an opt-in `--auto-sign` flag to
+  `zonegit set` / `commit` that re-signs touched RRsets in the same
+  commit.
+
 ## [0.5.0] - 2026-05-23
 
 Operational polish + DNSSEC scaffold. v0.5 makes the daemon credible
