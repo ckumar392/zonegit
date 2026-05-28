@@ -20,6 +20,33 @@ type Snapshotter interface {
 	Close() error
 }
 
+// StaticSnapshotter always returns the same Repo handle. Used in
+// secondary daemons that hold the repo open writable so the replication
+// client can land incoming objects in the same handle the resolver
+// reads from — there's no separate writer process, so the polling /
+// reopen dance is unnecessary.
+//
+// The handle is closed by Close. Callers must not close it themselves.
+type StaticSnapshotter struct {
+	R *repo.Repo
+}
+
+// Snapshot returns the wrapped handle.
+func (s *StaticSnapshotter) Snapshot() (*repo.Repo, error) {
+	if s.R == nil {
+		return nil, fmt.Errorf("StaticSnapshotter: nil repo")
+	}
+	return s.R, nil
+}
+
+// Close closes the wrapped handle.
+func (s *StaticSnapshotter) Close() error {
+	if s.R == nil {
+		return nil
+	}
+	return s.R.Close()
+}
+
 // PollingSnapshotter keeps a single read-only Repo open and reopens it
 // only when one of the watched refs changes its hash. This replaces the
 // v0 behaviour of opening Badger per DNS query (which capped throughput

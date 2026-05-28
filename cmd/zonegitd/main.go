@@ -33,6 +33,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/ckumar392/zonegit/pkg/refs"
+	"github.com/ckumar392/zonegit/pkg/replicate"
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/resolve"
 	"github.com/ckumar392/zonegit/pkg/route"
@@ -59,16 +60,19 @@ var (
 
 func main() {
 	var (
-		repoPath      = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
-		zoneFlag      = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (auto-loaded from repo if persisted)")
-		listen        = flag.String("listen", "127.0.0.1:5353", "DNS listen address (UDP+TCP)")
-		branch        = flag.String("branch", "main", "branch to serve")
-		atRefish      = flag.String("at", "", "if set, pin serving to this historical commit (refish: hash, branch, HEAD~N, tag)")
-		canarySpec    = flag.String("canary", "", "canary spec, e.g. \"canary:20\" — sends 20% of traffic (by client /24) to the 'canary' branch")
-		canarySalt    = flag.String("canary-salt", "zonegit", "hash salt for canary bucketing")
-		metricsListen = flag.String("metrics-listen", "", "if set (e.g. \":9353\"), serve Prometheus metrics on this address")
-		configPath    = flag.String("config", "", "path to per-zone YAML config (overrides --branch/--canary/--at on a per-zone basis)")
-		showVersion   = flag.Bool("version", false, "print version and exit")
+		repoPath        = flag.String("repo", envOr("ZONEGIT_REPO", "./.zonegit"), "path to zonegit repository")
+		zoneFlag        = flag.String("zone", envOr("ZONEGIT_ZONE", ""), "zone name (auto-loaded from repo if persisted)")
+		listen          = flag.String("listen", "127.0.0.1:5353", "DNS listen address (UDP+TCP)")
+		branch          = flag.String("branch", "main", "branch to serve")
+		atRefish        = flag.String("at", "", "if set, pin serving to this historical commit (refish: hash, branch, HEAD~N, tag)")
+		canarySpec      = flag.String("canary", "", "canary spec, e.g. \"canary:20\" — sends 20% of traffic (by client /24) to the 'canary' branch")
+		canarySalt      = flag.String("canary-salt", "zonegit", "hash salt for canary bucketing")
+		metricsListen   = flag.String("metrics-listen", "", "if set (e.g. \":9353\"), serve Prometheus metrics on this address")
+		configPath      = flag.String("config", "", "path to per-zone YAML config (overrides --branch/--canary/--at on a per-zone basis)")
+		replicateListen = flag.String("replicate-listen", "", "if set (e.g. \":9354\"), expose pull-replication endpoints so secondaries can mirror this repo")
+		primaryURL      = flag.String("primary", "", "if set (e.g. \"http://primary:9354\"), pull from this upstream every 5s. Implies secondary mode — local repo is opened writable.")
+		pullInterval    = flag.Duration("pull-interval", 5*time.Second, "polling interval when --primary is set")
+		showVersion     = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -80,17 +84,28 @@ func main() {
 	// Initial zone enumeration. We need at least one zone present for the
 	// daemon to be useful; new zones added later are picked up by the
 	// background reconciler below.
+	//
+	// Secondary mode skips this check — the secondary's zones come from
+	// replication, so an empty repo at startup is normal. The reconciler
+	// notices zones once the first pull completes.
 	probe, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
 	if err != nil {
-		fatal("open repo: %v", err)
+		if *primaryURL == "" {
+			fatal("open repo: %v", err)
+		}
+		// In secondary mode the repo may not exist yet. Create it.
+		probe, err = repo.Open(repo.Options{Path: *repoPath})
+		if err != nil {
+			fatal("create repo for secondary: %v", err)
+		}
 	}
 	startupZones, err := probe.Zones(context.Background())
 	if err != nil {
 		fatal("list zones: %v", err)
 	}
 	_ = probe.Close()
-	if len(startupZones) == 0 {
-		fatal("repo has no registered zones; run `zonegit init <zone>` first")
+	if len(startupZones) == 0 && *primaryURL == "" {
+		fatal("repo has no registered zones; run `zonegit init <zone>` first (or pass --primary URL to run as a secondary)")
 	}
 
 	// Load per-zone config (if --config given). Fall back to flag values
@@ -113,9 +128,30 @@ func main() {
 		cfgFile.DefaultSalt = *canarySalt
 	}
 
-	snap, err := resolve.NewPollingSnapshotter(*repoPath, nil, 200*time.Millisecond)
-	if err != nil {
-		fatal("snapshotter: %v", err)
+	// Snapshotter wiring depends on mode.
+	//
+	// Primary / standalone: PollingSnapshotter opens a read-only handle
+	// and reopens it when watched refs change. Multiple processes can
+	// share the directory (the writer is a separate `zonegit` CLI run).
+	//
+	// Secondary: the daemon itself writes (the replicate client lands
+	// incoming objects). Badger only allows one writer, so the daemon
+	// must hold the directory open writable, and the resolver must read
+	// through the same handle. StaticSnapshotter wraps it.
+	var snap resolve.Snapshotter
+	if *primaryURL != "" {
+		w, err := repo.Open(repo.Options{Path: *repoPath})
+		if err != nil {
+			fatal("secondary mode: open repo writable: %v", err)
+		}
+		snap = &resolve.StaticSnapshotter{R: w}
+		log.Printf("zonegitd: secondary mode — pulling from %s every %s", *primaryURL, *pullInterval)
+	} else {
+		ps, err := resolve.NewPollingSnapshotter(*repoPath, nil, 200*time.Millisecond)
+		if err != nil {
+			fatal("snapshotter: %v", err)
+		}
+		snap = ps
 	}
 	defer snap.Close()
 
@@ -172,16 +208,28 @@ func main() {
 	// the new settings.
 	registered := map[string]zoneRuleConfig{}
 	reconcile := func() {
-		// Open a fresh read-only repo every tick. We cannot reuse
-		// snap.Snapshot() here because the snapshotter's cached handle is
-		// only refreshed when a watched ref changes — and zone-marker refs
-		// are NOT watched. Opening fresh costs one Badger Open per
-		// second; acceptable for the discovery path.
-		rp, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
-		if err != nil {
-			return
+		// In primary mode, open a fresh read-only repo every tick to
+		// discover new zones. The PollingSnapshotter's cached handle is
+		// only refreshed on watched-ref changes, and zone markers aren't
+		// watched, so the snapshotter would miss new zones.
+		//
+		// In secondary mode, we already hold the writable handle (the
+		// replicate client writes through it). Badger forbids a
+		// separate read-only Open on the same directory while a write
+		// lock is held, so we must reuse the existing handle. The
+		// writable handle sees every write immediately, so freshness is
+		// not a problem.
+		var rp *repo.Repo
+		if static, ok := snap.(*resolve.StaticSnapshotter); ok {
+			rp = static.R
+		} else {
+			fresh, err := repo.Open(repo.Options{Path: *repoPath, ReadOnly: true})
+			if err != nil {
+				return
+			}
+			defer fresh.Close()
+			rp = fresh
 		}
-		defer rp.Close()
 		all, err := rp.Zones(context.Background())
 		if err != nil {
 			return
@@ -251,7 +299,11 @@ func main() {
 				log.Printf("zonegitd: unregistered zone %s (no longer in repo)", z)
 			}
 		}
-		snap.SetWatchedRefs(refsToWatch)
+		// Only the polling snapshotter has a watch list. Secondary mode
+		// uses a static handle that always sees the latest write.
+		if ps, ok := snap.(*resolve.PollingSnapshotter); ok {
+			ps.SetWatchedRefs(refsToWatch)
+		}
 	}
 
 	reconcile() // initial registration
@@ -303,6 +355,38 @@ func main() {
 				log.Printf("metrics listener: %v", err)
 			}
 		}()
+	}
+
+	// Replication server: expose this daemon's repo to secondaries
+	// over HTTP. Mounted on a separate port so DNS traffic stays clean.
+	if *replicateListen != "" {
+		repSrv := &replicate.Server{
+			SnapshotFn: snap.Snapshot,
+		}
+		mux := http.NewServeMux()
+		repSrv.RegisterHandlers(mux)
+		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, "zonegitd %s — replication endpoints under %s\n", version, replicate.BasePath)
+		})
+		go func() {
+			log.Printf("zonegitd: replication on %s%s", *replicateListen, replicate.BasePath)
+			if err := http.ListenAndServe(*replicateListen, mux); err != nil {
+				log.Printf("replication listener: %v", err)
+			}
+		}()
+	}
+
+	// Replication client: pull from a primary every --pull-interval.
+	// Implies the daemon was started in secondary mode above.
+	if *primaryURL != "" {
+		live, err := snap.Snapshot()
+		if err != nil {
+			fatal("secondary: snapshot: %v", err)
+		}
+		client := replicate.NewClient(*primaryURL, live)
+		client.Interval = *pullInterval
+		client.Run(context.Background())
+		defer client.Stop()
 	}
 
 	// SIGHUP: reload --config without restarting. Falls back to the

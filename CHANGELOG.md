@@ -13,6 +13,63 @@ Breaking changes between minor versions will be called out explicitly.
 ### Added
 - _nothing yet_
 
+## [0.8.0] - 2026-05-28
+
+Pull replication. A secondary zonegitd can now mirror a primary
+continuously over HTTP. The protocol is a Merkle walk: secondary asks
+"what objects do you have reachable from these branch tips that I
+don't have given I already have these?", primary computes the delta,
+secondary fetches each object by content hash. Idiomatic for a
+content-addressed store, network-efficient by construction, and
+provable correct because every object body validates against its own
+hash on insert.
+
+### Added
+- **`pkg/replicate`** — three-endpoint HTTP protocol under `/v0/`:
+  `GET /v0/refs` returns the primary's zones and branch tips;
+  `POST /v0/objects/walk` returns the missing-object set given
+  `{roots, known}`; `GET /v0/objects/<hash>` streams the object body
+  with `X-Object-Kind` header. Client and Server are independent —
+  embed either in a custom daemon, or use both via the zonegitd
+  flags below ([pkg/replicate](pkg/replicate)).
+- **`zonegitd --replicate-listen :PORT`** — primaries expose the
+  replication endpoints on this port (separate from the DNS listener
+  so traffic stays clean).
+- **`zonegitd --primary URL`** — runs the daemon in secondary mode.
+  Opens the local repo writable, runs a background poller every
+  `--pull-interval` (default 5s), lands incoming objects via the
+  Merkle delta. Resolver reads through the same writable handle (a
+  new `resolve.StaticSnapshotter`) so newly-pulled commits answer
+  the very next DNS query.
+- **Secondary-mode startup tolerates an empty repo** — the v0.4
+  "must have at least one zone" check is skipped when `--primary` is
+  set, because the secondary's zones come from replication.
+
+### Changed
+- The 24-step demo grew to 25 steps. New step 24 spins up a fresh
+  empty secondary daemon, watches it catch up from the primary,
+  mutates a record on the primary only, and shows the secondary
+  delta-pulling the change within 2 seconds — same record, two
+  daemons, no shared filesystem
+  ([scripts/demo.sh](scripts/demo.sh)).
+- Reconciler now detects the snapshotter mode: in secondary mode it
+  reuses the writable handle (Badger forbids parallel read-only opens
+  while a write lock is held); in primary mode it keeps opening a
+  fresh read-only handle per tick.
+
+### Known limitations (deferred to v0.9)
+- **One-way replication only.** Multi-master is a v1.0+ design
+  problem deliberately out of scope here. The "primary owns all
+  writes" model fits the typical DNS deployment shape.
+- **No authentication on the replication endpoints.** A v0.9 add-on
+  will require a shared HMAC token in the `Authorization` header
+  before serving `/v0/*`. Today the assumption is that the
+  replication network is private.
+- **Object fetch is one-at-a-time over HTTP.** Efficient enough for
+  the demo (~100 objects/sec on localhost); a batched-streaming
+  variant of the same wire protocol (HTTP/2 multiplexing or gRPC
+  bidi) is the v0.9+ throughput optimization.
+
 ## [0.7.0] - 2026-05-23
 
 Integration + operational completeness. v0.7 closes the last credible
