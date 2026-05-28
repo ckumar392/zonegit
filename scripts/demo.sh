@@ -85,9 +85,10 @@ run()   { printf '\033[2m$ %s\033[0m\n' "$*"; eval "$@"; }
 SERVER_PID=""
 TT_PID=""
 CANARY_PID=""
+SECONDARY_PID=""
 
 cleanup() {
-  for pid in "$SERVER_PID" "$TT_PID" "$CANARY_PID"; do
+  for pid in "$SERVER_PID" "$TT_PID" "$CANARY_PID" "$SECONDARY_PID"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -122,12 +123,15 @@ step 3b "import" "parse via miekg/dns, canonicalise each RRset, hash, write comm
 run "$BIN/zonegit --repo $REPO import $ZONEFILE -m 'initial import'"
 
 step 4 "start zonegitd" "cached snapshotter; /metrics on :$METRICS_PORT"
+REPLICATE_PORT="${REPLICATE_PORT:-19354}"
 "$BIN/zonegitd" --repo "$REPO" --listen "127.0.0.1:$PORT" \
   --metrics-listen "127.0.0.1:$METRICS_PORT" \
+  --replicate-listen "127.0.0.1:$REPLICATE_PORT" \
   > /tmp/zonegit-demo.log 2>&1 &
 SERVER_PID=$!
 sleep 1
 echo "  server pid: $SERVER_PID   log: /tmp/zonegit-demo.log"
+dim   "      replication endpoints up at http://127.0.0.1:$REPLICATE_PORT/v0/ — used by step 24"
 
 step 5a "dig api.$ZONE A" "expect 1.2.3.4"
 run "dig +short @127.0.0.1 -p $PORT api.$ZONE A"
@@ -305,7 +309,34 @@ else
   dim   "      bin/coredns not present. Build with: make coredns (first build pulls CoreDNS deps)."
 fi
 
-step 24 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
+step 24 "PULL REPLICATION — primary→secondary" "spin up a secondary daemon, watch it mirror the primary live"
+SECONDARY_REPO="${SECONDARY_REPO:-/tmp/zonegit-demo-secondary}"
+SECONDARY_PORT="${SECONDARY_PORT:-15380}"
+rm -rf "$SECONDARY_REPO"
+dim   "      starting a fresh, EMPTY secondary at $SECONDARY_REPO, pulling from primary on $REPLICATE_PORT:"
+"$BIN/zonegitd" --repo "$SECONDARY_REPO" --listen "127.0.0.1:$SECONDARY_PORT" \
+  --primary "http://127.0.0.1:$REPLICATE_PORT" --pull-interval 1s \
+  > /tmp/zonegit-demo-secondary.log 2>&1 &
+SECONDARY_PID=$!
+sleep 3   # initial pull + reconciler tick + zone registration with miekg
+dim   "      secondary catching up… now query both:"
+printf '  primary   @ %s : ' "$PORT"
+dig +short @127.0.0.1 -p "$PORT" "api.$ZONE" A
+printf '  secondary @ %s : ' "$SECONDARY_PORT"
+dig +short @127.0.0.1 -p "$SECONDARY_PORT" "api.$ZONE" A
+dim   "      now mutate on the PRIMARY only — the secondary picks it up via Merkle delta in under 2s:"
+run "$BIN/zonegit --repo $REPO set --auto-sign -m 'replicate-test: api -> 4.4.4.4' api.$ZONE A 300 4.4.4.4"
+sleep 2.5
+printf '  primary   @ %s : ' "$PORT"
+dig +short @127.0.0.1 -p "$PORT" "api.$ZONE" A
+printf '  secondary @ %s : ' "$SECONDARY_PORT"
+dig +short @127.0.0.1 -p "$SECONDARY_PORT" "api.$ZONE" A
+dim   "      the secondary pulled only the changed objects (one blob + one tree spine + one commit + the auto-bumped SOA blob)."
+kill "$SECONDARY_PID" 2>/dev/null || true
+wait "$SECONDARY_PID" 2>/dev/null || true
+SECONDARY_PID=""
+
+step 25 "/metrics" "Prometheus exposition — qtype/rcode histograms + active-branch gauge"
 run "curl -s http://127.0.0.1:$METRICS_PORT/metrics | head -20"
 
 echo
