@@ -10,11 +10,11 @@
 // to match.
 //
 // Why HTTP and not gRPC: gRPC pulls in ~150 transitive modules and a
-// protobuf compiler step. For the v0.8 demo, plain HTTP with content
-// addressing is enough — every object body is identified by its
-// SHA-256 hash so transport correctness is verifiable end-to-end with
-// no extra schema. v0.9+ can add a streaming-gRPC backend behind the
-// same Client interface if throughput becomes the constraint.
+// protobuf compiler step. Plain HTTP suffices here — every object body
+// is identified by its SHA-256 hash, so transport correctness is
+// verifiable end-to-end without a schema. A streaming-gRPC backend can
+// be added behind the same Client interface if throughput becomes the
+// constraint.
 //
 // Endpoint layout:
 //
@@ -22,8 +22,7 @@
 //	POST /v0/objects/walk          → JSON: {missing: []hash}
 //	GET  /v0/objects/<hex-hash>    → binary object body; X-Object-Kind header
 //
-// The protocol is one-way: clients never push to primaries. Multi-master
-// replication is a v0.9+ design problem deliberately out of scope here.
+// The protocol is one-way: clients never push to primaries.
 package replicate
 
 import (
@@ -71,7 +70,6 @@ type WalkResponse struct {
 	Missing []string `json:"missing"` // hex
 }
 
-// hashesToHex converts a slice of store.Hash to hex strings.
 func hashesToHex(hs []store.Hash) []string {
 	out := make([]string, len(hs))
 	for i, h := range hs {
@@ -80,8 +78,6 @@ func hashesToHex(hs []store.Hash) []string {
 	return out
 }
 
-// hexesToHashes parses a slice of hex strings to store.Hash, returning
-// the first error encountered.
 func hexesToHashes(in []string) ([]store.Hash, error) {
 	out := make([]store.Hash, len(in))
 	for i, s := range in {
