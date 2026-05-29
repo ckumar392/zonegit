@@ -126,9 +126,6 @@ func (c *Client) Pull(ctx context.Context) error {
 	return nil
 }
 
-// pullBranch syncs one (zone, branch) by walking from primaryHash and
-// fetching every object the local repo doesn't have, then advancing
-// the local ref.
 func (c *Client) pullBranch(ctx context.Context, b Branch, primaryHash, localHash store.Hash) error {
 	known := []string{}
 	if !localHash.IsZero() {
@@ -158,7 +155,6 @@ func (c *Client) pullBranch(ctx context.Context, b Branch, primaryHash, localHas
 		}
 	}
 
-	// Advance the local ref. CreateBranch if it didn't exist, else UpdateBranch.
 	if localHash.IsZero() {
 		if err := c.Local.Refs().CreateBranch(ctx, b.Zone, b.Name, primaryHash); err != nil {
 			return fmt.Errorf("create branch: %w", err)

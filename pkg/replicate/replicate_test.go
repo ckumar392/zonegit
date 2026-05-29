@@ -19,9 +19,6 @@ func ctx() context.Context { return context.Background() }
 // TestEndToEndPull seeds a primary repo with one commit, spins up a
 // Server in front of it, pulls into an empty secondary, and asserts
 // the secondary now resolves the same record.
-//
-// This is the headline test for v0.8 — if it passes, replication
-// works for the demo flow.
 func TestEndToEndPull(t *testing.T) {
 	// Primary: init, import a record, commit.
 	primary, err := repo.Open(repo.Options{Memory: true})

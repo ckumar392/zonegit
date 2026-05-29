@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/ckumar392/zonegit/pkg/object"
-	"github.com/ckumar392/zonegit/pkg/refs"
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/store"
 )
@@ -21,10 +20,8 @@ import (
 //
 // The repo handle must be opened read-only — Server never mutates.
 type Server struct {
-	// SnapshotFn returns a fresh read-only Repo for the current state.
-	// Used per request so secondaries see the latest commits the
-	// writer has produced. Implementations typically wire this to
-	// resolve.PollingSnapshotter or open a fresh handle on every call.
+	// SnapshotFn returns a Repo handle for the current state. Called
+	// per request so secondaries see the latest committed state.
 	SnapshotFn func() (*repo.Repo, error)
 }
 
@@ -169,10 +166,6 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 
 // walkReachable adds h and every object reachable from it to visited.
 // Idempotent — re-visiting a hash is cheap.
-//
-// Walks: commits → tree + parents; trees → child trees + leaf blobs;
-// blobs and symrefs are leaves. The same shape is used for both
-// expanding `known` and walking `roots`.
 func walkReachable(ctx context.Context, s store.Storage, h store.Hash, visited map[store.Hash]bool) error {
 	if h.IsZero() || visited[h] {
 		return nil
@@ -187,8 +180,6 @@ func walkReachable(ctx context.Context, s store.Storage, h store.Hash, visited m
 	})
 }
 
-// walkMissing walks from root, skipping any hash in known. Collects
-// every object the secondary needs to fetch.
 func walkMissing(ctx context.Context, s store.Storage, h store.Hash, known, missing map[store.Hash]bool) error {
 	if h.IsZero() || known[h] || missing[h] {
 		return nil
@@ -239,7 +230,3 @@ func walkChildren(ctx context.Context, s store.Storage, obj store.Object, fn fun
 	}
 	return nil
 }
-
-// Suppress unused-import linting when refs is only referenced by the
-// handleRefs ListBranches call above on some platforms.
-var _ = refs.BranchPrefix

@@ -31,7 +31,6 @@ type StaticSnapshotter struct {
 	R *repo.Repo
 }
 
-// Snapshot returns the wrapped handle.
 func (s *StaticSnapshotter) Snapshot() (*repo.Repo, error) {
 	if s.R == nil {
 		return nil, fmt.Errorf("StaticSnapshotter: nil repo")
@@ -39,7 +38,6 @@ func (s *StaticSnapshotter) Snapshot() (*repo.Repo, error) {
 	return s.R, nil
 }
 
-// Close closes the wrapped handle.
 func (s *StaticSnapshotter) Close() error {
 	if s.R == nil {
 		return nil
