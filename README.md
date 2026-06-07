@@ -17,28 +17,35 @@ servers (BIND, Knot, PowerDNS, Route 53) don't expose at all.
 
 ## Status
 
-**v0.3 — public preview.** Single zone, single process, no replication.
-v0.3 adds the four things you'd actually want before pointing a
-production secondary at this:
+**v0.8 — public preview.** Eight tagged releases; builds clean, full test
+suite green. What works today, answered over real `dig` queries:
 
-- **Canary serving** (`zonegitd --canary canary:20`): a stable
-  subnet-bucket router that sends X% of traffic to a canary branch and
-  snaps it back with one ref move. See *Canary serving* below.
-- **AXFR**: respond to full-zone transfer requests, so any existing
-  BIND / Knot / PowerDNS secondary can slave off `zonegitd`.
-- **Time-travel daemon** (`zonegitd --at HEAD~5`): pin the server to a
-  historical commit and `dig` against the past, not just the current
-  branch tip.
-- **Auto-incrementing SOA serial**: changes that touch any non-SOA RRset
-  bump the apex SOA serial automatically, so existing IXFR/NOTIFY
-  pipelines pick up changes the way they always have.
+- **Versioned zone store** — `log`, `diff`, `blame`, and time-travel reads
+  (`zonegit show <name> <type> HEAD~5`) over a content-addressed Merkle DAG.
+- **Branching & rollout** — three-way `merge`, `revert`, `reset --hard`, and
+  canary serving that splits traffic by client `/24`
+  (`zonegitd --canary canary:20`), rolled back with one ref move.
+- **Authoritative serving** — `zonegitd` answers UDP + TCP, AXFR, and IXFR;
+  the apex SOA serial auto-bumps on every commit so existing secondaries
+  pick changes up through their normal refresh.
+- **DNSSEC** — real Ed25519 signing (RFC 8080): `zone-keygen`, `sign-zone`,
+  `set --auto-sign` (re-sign on write), and a `ds` helper for the parent
+  delegation. `dig +dnssec` returns answers with inline RRSIGs.
+- **Multi-zone** — one repo holds many zones; one daemon serves them all,
+  with per-zone branch / canary / time-travel config and SIGHUP reload.
+- **Replication** — pull-based primary→secondary mirroring over HTTP
+  (a Merkle-DAG delta walk).
+- **CoreDNS plugin** — drop zonegit into an existing CoreDNS deployment
+  ([plugin/coredns/zonegit](plugin/coredns/zonegit)).
+- **Signed commits** — Ed25519 sign + chain verify (`sign-commit` / `verify`),
+  plus a Prometheus `/metrics` endpoint.
 
-Plus: a cached, polling snapshotter (the daemon no longer opens Badger
-per packet), a Prometheus `/metrics` endpoint, Ed25519 commit signing
-(`zonegit sign-commit` / `verify`), and a PR-style verb pair
-(`zonegit propose` / `approve` / `review`). The on-disk format and
-public Go API are still not stable; expect breakage between minor
-versions until v1.0.
+The on-disk format and public Go API are **not stable** before v1.0 — expect
+to re-init repos across minor versions. Don't make `zonegitd` your sole
+internet-facing authority yet; it shines as a versioned **front-end** for a
+battle-tested server. See
+[examples/bind-frontend](examples/bind-frontend) for the "keep BIND serving,
+drive every change through zonegit" recipe.
 
 ## Demo
 
@@ -252,29 +259,26 @@ The verb names exist purely to make ServiceNow / change-management
 conversations feel native. Underneath it's `branch + checkout`,
 `diff a..b`, and `checkout main; merge`.
 
-## What's coming next (talking points)
+## What's coming next
 
-These are real items on the [roadmap](docs/ROADMAP.md) and the surface
-that supports them is already in place. The code is not.
+The original roadmap's headline items — DNSSEC, replication, multi-zone,
+and the CoreDNS plugin — have all shipped (see the
+[changelog](CHANGELOG.md)). The live punch list:
 
-- **DNSSEC** — DNSKEY, RRSIG, NSEC/NSEC3 live in the apex like any
-  other RRset, so they're already storable as Blobs and reachable by
-  the resolver. v4 adds signing on the write path (`zonegit sign-zone
-  --ksk ... --zsk ...`) and verification on the resolver. KSK/ZSK
-  rollover becomes "branch + ref move".
-- **Replication** — branches are content-addressed pointers, so a pull
-  replica is *"give me every reachable object from `refs/heads/main`
-  that I don't already have"*. The wire protocol is dumb: it walks the
-  Merkle DAG. v5 ships a pull mode; multi-master with per-branch
-  ownership is v6.
-- **Multi-zone** — today, one repo = one zone. The object model is
-  already zone-blind (the zone name is just persisted metadata), so v5
-  reshapes the on-disk layout to `refs/heads/<zone>/<branch>` and
-  unlocks one daemon serving many zones.
-- **CoreDNS plugin** — `pkg/resolve.Handle` is already the seam. A
-  CoreDNS plugin is ~200 LoC of glue wrapping that function and
-  registering it with the Corefile parser. Listed at v6 because the
-  authority story has to be airtight first.
+- **Replication auth** — the pull endpoints currently assume a trusted
+  private network; v0.9 adds a shared-secret HMAC token on `/v0/*`.
+- **NIOS bridge** — watch NIOS zone changes and land them as zonegit
+  commits, so an existing Infoblox deployment can adopt zonegit
+  incrementally without a flag day.
+- **Batched object fetch** — replication pulls one object per HTTP request
+  today; a streaming variant (HTTP/2 or gRPC) is the throughput win.
+- **Postgres backend + gRPC control plane** — a `Storage` implementation
+  beyond Badger, plus a gRPC mirror of `pkg/repo` with mTLS and per-branch
+  ACLs (the original roadmap's v4, deprioritized behind the items above).
+- **Stable on-disk format (v1.0)** — the gate for trusting `zonegitd` as a
+  sole authority, alongside multi-master replication.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full sequencing.
 
 ## Install
 
@@ -322,8 +326,9 @@ The full design is in [docs/OBJECT_MODEL.md](docs/OBJECT_MODEL.md).
 
 ```
 cmd/
-  zonegit/      CLI entry point
-  zonegitd/     Authoritative DNS server entry point
+  zonegit/              CLI entry point
+  zonegitd/             Authoritative DNS server entry point
+  coredns-with-zonegit/ CoreDNS built with the zonegit plugin
 pkg/
   store/        Storage interface + Badger and in-memory backends
   object/       Blob / Tree / Commit / Tag, canonical encoding, hashing
@@ -331,9 +336,15 @@ pkg/
   refs/         Branches, HEAD, reflog, atomic compare-and-swap
   history/      log, diff, blame
   merge/        Three-way tree merge with conflict classification
-  resolve/      DNS query path
+  resolve/      DNS query path (AXFR, IXFR, time-travel, DNSSEC answers)
+  route/        Canary / client-subnet routing
+  dnssec/       Ed25519 zone signing (RFC 8080)
+  sign/         Ed25519 commit signing + verification
+  replicate/    Pull-replication protocol (client + server)
   repo/         Public Go API
+plugin/coredns/zonegit/   CoreDNS plugin (separate Go module)
 docs/           Design documentation
+examples/       Runnable recipes (e.g. bind-frontend)
 scripts/        Development helpers
 ```
 

@@ -11,7 +11,21 @@ Breaking changes between minor versions will be called out explicitly.
 ## [Unreleased]
 
 ### Added
-- _nothing yet_
+- **`examples/bind-frontend/`** — run zonegit as a version-control
+  front-end for BIND. zonegit authors the zone
+  (`commit` / `diff` / `blame` / `propose` / `approve`), `zonegitd` serves
+  AXFR, and BIND slaves the zone and does the actual serving — so zonegit
+  stays off the query path and a pre-1.0 format change costs a re-import,
+  not an outage. Ships `up.sh` / `publish.sh` / `down.sh` and a sample
+  `lab.internal.` zone; `publish.sh` runs `rndc refresh` to force an
+  immediate pull (zonegitd sends no outbound NOTIFY)
+  ([examples/bind-frontend](examples/bind-frontend)).
+
+### Changed
+- Refreshed the top-level docs (README status + "what's coming next",
+  [docs/ROADMAP.md](docs/ROADMAP.md)) to reflect the v0.4–v0.8 work —
+  multi-zone, IXFR, DNSSEC, CoreDNS plugin, and pull replication — that had
+  shipped but was still described as future work.
 
 ## [0.8.0] - 2026-05-28
 
@@ -474,6 +488,12 @@ First public preview. End-to-end demo of `init → import → set → log → di
 - On-disk Badger layout is not stable; expect to re-init repos when
   upgrading.
 
-[Unreleased]: https://github.com/ckumar392/zonegit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ckumar392/zonegit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ckumar392/zonegit/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/ckumar392/zonegit/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/ckumar392/zonegit/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/ckumar392/zonegit/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/ckumar392/zonegit/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/ckumar392/zonegit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ckumar392/zonegit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ckumar392/zonegit/releases/tag/v0.1.0
