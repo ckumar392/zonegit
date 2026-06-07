@@ -6,6 +6,34 @@
 
 ---
 
+## Where we are now (v0.8)
+
+> The milestones below were the original plan; actual delivery (tags
+> `v0.1`–`v0.8`) reordered some of them. The [changelog](../CHANGELOG.md) is
+> the authoritative record of what shipped.
+
+**Shipped:** the v0/v1 foundation, canary serving (v2, minimal form), signed
+commits (v3), **DNSSEC** (real Ed25519 signing — not on the original numbered
+list, folded in at v0.6), **multi-zone** (v5), **IXFR**, **pull replication**
+(v5), and the **CoreDNS plugin** (v6).
+
+**Not started / deprioritized:** the v4 "production storage + control plane"
+block — Postgres adapter, gRPC API, mTLS/ACLs — was leapfrogged in favour of
+DNSSEC, replication, and the CoreDNS plugin, and remains open.
+
+**Live punch list (v0.9 → v1.0):**
+- HMAC auth on the replication endpoints (they assume a private network today)
+- NIOS bridge — land NIOS zone changes as zonegit commits
+- Batched / streaming replication fetch (one object per request today)
+- Postgres backend + gRPC control plane (the deferred v4)
+- **Stable on-disk format** + multi-master replication → the v1.0 gate
+
+Until v1.0 freezes the on-disk format, the safest production use is as a
+versioned **front-end** to a battle-tested server — see
+[examples/bind-frontend](../examples/bind-frontend).
+
+---
+
 ## v0 — "It works on one zone, on one machine" (target: ~2–3 weeks of evenings)
 
 **Goal:** end-to-end demo of init → commit → log → diff → blame → serve.
@@ -67,6 +95,10 @@ broken merges with the demo, which would be embarrassing.
 
 ## v2 — "Canary serving" (~1–2 weeks)
 
+> **Status: shipped (minimal form) in v0.3.** Subnet-hash canary, EDNS Client
+> Subnet handling, and per-branch `/metrics` are live. The full selector DSL
+> below (geo / ASN / time windows / list literals) is still open.
+
 The headline UC5 feature.
 
 - [ ] Selector DSL: minimal grammar (`client.subnet`, `hash`, `geo`,
@@ -88,6 +120,10 @@ SELECTORS.md §8 are answered.
 
 ## v3 — "Signed history" (~1 week)
 
+> **Status: shipped in v0.3.** `keygen`, `sign-commit`, and `verify --chain`
+> are live (file-based keys). Server-side "refuse to serve unsigned commits"
+> policy and KMS-backed keys are still open.
+
 - [ ] Ed25519 keypair management (file-based v3, KMS in v4+)
 - [ ] Sign commits and tags
 - [ ] `zonegit verify <ref>` — verifies signature chain back to root
@@ -102,6 +138,10 @@ This is purely additive.
 ---
 
 ## v4 — "Production storage + control plane" (~2 weeks)
+
+> **Status: not started.** Deprioritized behind DNSSEC, replication, and the
+> CoreDNS plugin. This whole block is still open and is the largest gap
+> between zonegit and a production control plane.
 
 - [ ] Postgres adapter implementing `Storage` interface
 - [ ] Migration tool: Badger → Postgres
@@ -118,9 +158,13 @@ the interface is wrong, and we fix it before going further.
 
 ## v5 — "Replication" (~2–3 weeks)
 
+> **Status: mostly shipped.** Multi-zone repo layout landed in v0.4; pull
+> replication (primary→secondary, HTTP Merkle-DAG walk) landed in v0.8.
+> Multi-master with per-branch ownership is still open (a v1.0+ design).
+
 - [ ] Push/fetch wire protocol over gRPC streaming
-- [ ] Pull replication: secondary nodes fetch and serve read-only
-- [ ] Multi-zone repo layout (today: one-zone-per-repo; v5: many-zones-per-repo)
+- [x] Pull replication: secondary nodes fetch and serve read-only (v0.8, over HTTP)
+- [x] Multi-zone repo layout (today: one-zone-per-repo; v5: many-zones-per-repo) (v0.4)
 - [ ] Conflict-free per-branch ownership (each branch has a "home" node;
       pushes route there)
 
@@ -128,7 +172,11 @@ the interface is wrong, and we fix it before going further.
 
 ## v6 — "Ecosystem" (open-ended)
 
-- [ ] CoreDNS plugin
+> **Status: started in v0.7.** The CoreDNS plugin shipped. Terraform provider,
+> OpenAPI for the (not-yet-built) gRPC API, web UI, and the BIND catalog-zone
+> bridge are still open.
+
+- [x] CoreDNS plugin (v0.7)
 - [ ] Terraform provider
 - [ ] OpenAPI for gRPC API
 - [ ] Web UI for change review (separate repo)
