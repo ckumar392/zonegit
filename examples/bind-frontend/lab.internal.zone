@@ -1,0 +1,17 @@
+$ORIGIN lab.internal.
+$TTL 300
+; SOA refresh is deliberately low (60s) so BIND re-checks the primary
+; quickly. zonegitd sends no NOTIFY, so until the refresh timer fires a
+; change is invisible to BIND — `publish.sh` runs `rndc refresh` to force
+; an immediate re-transfer. See README.md.
+@   IN SOA ns1.lab.internal. admin.lab.internal. (
+            1          ; serial   (zonegit auto-bumps this on every commit)
+            60         ; refresh
+            30         ; retry
+            1209600    ; expire
+            300 )      ; minimum / negative-cache TTL
+    IN NS  ns1.lab.internal.
+ns1 IN A   127.0.0.1
+api IN A   10.0.0.10
+www IN CNAME api.lab.internal.
+db  IN A   10.0.0.20
