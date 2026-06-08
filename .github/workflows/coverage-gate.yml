@@ -1,0 +1,88 @@
+name: coverage
+
+# Block any PR that lowers total statement coverage. Compares the PR head's
+# coverage against the base branch's; fails only on a real decrease.
+on:
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-regression:
+    name: no coverage regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          path: pr
+
+      - name: Check out base (${{ github.base_ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pr/go.mod
+          cache-dependency-path: pr/go.sum
+
+      - name: Measure coverage (PR head and base)
+        id: cov
+        run: |
+          set -uo pipefail
+          # Total statement coverage for the module rooted at $1, or empty
+          # string if the tests don't build/pass there.
+          measure() {
+            ( cd "$1" \
+                && go test -count=1 -coverprofile=cov.out ./... >/dev/null 2>&1 \
+                && go tool cover -func=cov.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}' )
+          }
+
+          PR="$(measure pr)"
+          echo "PR coverage:   ${PR:-<failed to compute>}"
+          if [ -z "$PR" ]; then
+            echo "::error::could not compute PR coverage — do the tests build and pass?"
+            exit 1
+          fi
+
+          BASE="$(measure base)"
+          echo "Base coverage: ${BASE:-<failed to compute>}"
+          if [ -z "$BASE" ]; then
+            # Don't block a PR because the base branch is broken; just warn.
+            echo "::warning::could not compute base coverage; skipping the regression check"
+            BASE=0
+          fi
+
+          {
+            echo "pr=$PR"
+            echo "base=$BASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Enforce no regression
+        env:
+          PR: ${{ steps.cov.outputs.pr }}
+          BASE: ${{ steps.cov.outputs.base }}
+        run: |
+          awk -v b="$BASE" -v p="$PR" 'BEGIN {
+            if (p + 0 < b + 0) {
+              printf "::error::coverage decreased: %.1f%% (base) -> %.1f%% (PR). Add tests covering your change.\n", b, p
+              exit 1
+            }
+            printf "coverage did not decrease: %.1f%% (base) -> %.1f%% (PR)\n", b, p
+          }'
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Coverage gate"
+            echo ""
+            echo "| base (${{ github.base_ref }}) | this PR |"
+            echo "|---|---|"
+            echo "| ${{ steps.cov.outputs.base }}% | ${{ steps.cov.outputs.pr }}% |"
+          } >> "$GITHUB_STEP_SUMMARY"
