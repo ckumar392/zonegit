@@ -326,7 +326,7 @@ BEFORE                                  AFTER
 1. **Standalone `zonegitd`** (v0+) — a binary that opens a zonegit repo and
    serves DNS on port 53 directly. Useful for demos, dev, and small
    deployments. Internally uses `pkg/resolve`.
-2. **CoreDNS plugin** (v6) — a thin shim (~200 LoC) wrapping
+2. **CoreDNS plugin** (v0.7) — a thin shim (~200 LoC) wrapping
    `pkg/resolve` as a CoreDNS plugin. Embeds into existing CoreDNS
    deployments with a single `Corefile` directive.
 
@@ -338,7 +338,7 @@ other authoritative server.
 BIND is C; writing a safe, maintained C plugin that bridges to a Go
 object store is fragile and unlikely to be accepted upstream. Instead,
 `zonegitd` is a **drop-in replacement** for BIND — same port, same
-protocol, same zone transfer (AXFR/IXFR, v5+).
+protocol, same zone transfer (AXFR and IXFR).
 
 
 ---

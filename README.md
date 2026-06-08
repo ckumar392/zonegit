@@ -217,10 +217,10 @@ foo.com.   300  IN  SOA  ns1.foo.com. admin.foo.com. 2 7200 3600 1209600 300
 ```
 
 Any standard BIND / Knot / PowerDNS secondary can `transfer foo.com from
-127.0.0.1` and stay in sync via its usual refresh loop. Because the apex
-SOA serial auto-increments on every commit that touches the zone,
-IXFR-style polling Just Works (we don't ship IXFR yet, so secondaries
-re-AXFR; that's a v4 optimisation).
+127.0.0.1` and stay in sync via its usual refresh loop. The apex SOA serial
+auto-increments on every commit that touches the zone, so secondaries pick
+changes up through their normal refresh — and `zonegitd` answers IXFR, so a
+secondary transfers just the delta instead of re-pulling the whole zone.
 
 ### 11. Signed commits
 
