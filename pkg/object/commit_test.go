@@ -8,6 +8,15 @@ import (
 	"github.com/ckumar392/zonegit/pkg/store"
 )
 
+// mkHash returns a store.Hash with every byte set to b.
+func mkHash(b byte) store.Hash {
+	var h store.Hash
+	for i := range h {
+		h[i] = b
+	}
+	return h
+}
+
 func TestCommitRoundTrip(t *testing.T) {
 	t.Parallel()
 	parent := mkHash(0xaa)
