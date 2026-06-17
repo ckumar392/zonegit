@@ -17,10 +17,10 @@ import (
 // always starts and ends with the apex SOA (RFC 5936 §2.2). RRsets between
 // the two SOAs are emitted in canonical tree-walk order.
 //
-// AXFR is what makes this daemon a credible drop-in for BIND/Knot/PowerDNS
-// — secondaries can pull the zone over standard TCP and stay in sync via
-// their own NOTIFY/refresh loop. We deliberately do not implement IXFR
-// (delta transfer) yet; secondaries will simply re-AXFR on every NOTIFY.
+// AXFR makes this daemon a credible drop-in for BIND/Knot/PowerDNS:
+// secondaries pull the zone over standard TCP and stay in sync via their
+// own NOTIFY/refresh loop. Incremental transfer (IXFR) is handled
+// separately in serveIXFR.
 func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
