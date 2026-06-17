@@ -12,13 +12,12 @@
 authoritative DNS zones. Every change is an immutable commit; the live
 zone is just a pointer to the latest commit on a branch. That single
 inversion gives you `log`, `diff`, `blame`, time-travel reads, and
-branch-based rollout — operations that today's authoritative DNS
-servers (BIND, Knot, PowerDNS, Route 53) don't expose at all.
+branch-based rollout — operations that authoritative DNS servers don't
+natively expose.
 
 ## Status
 
-**v0.8 — public preview.** Eight tagged releases; builds clean, full test
-suite green. What works today, answered over real `dig` queries:
+**v0.8 — public preview.** What works today:
 
 - **Versioned zone store** — `log`, `diff`, `blame`, and time-travel reads
   (`zonegit show <name> <type> HEAD~5`) over a content-addressed Merkle DAG.
@@ -129,7 +128,7 @@ api.foo.com. 300 IN A 1.2.3.4
 ```
 
 That last query — *"what did this name resolve to N commits ago?"* —
-is the one that no DNS tool shipping today can answer.
+falls out for free once commit history is the source of truth.
 
 ### 6. Branch and merge (v0.2+)
 
@@ -200,9 +199,10 @@ $ for ip in 10.{1..20}.0.1; do dig +short +subnet=$ip/24 \
 $ zonegit --repo ./.zonegit reset --hard main
 ```
 
-Per-rule match counts ship out the `/metrics` endpoint
-(`zonegit_dns_queries_total{qtype,rcode}` plus the active-branch info
-gauge) so a Grafana dashboard sees the cohort split in real time.
+The `/metrics` endpoint exposes `zonegit_dns_queries_total{qtype,rcode}`
+plus a `zonegit_repo_active_branch` info gauge, so a dashboard can show
+query volume and which branch the daemon is bound to. (Per-cohort match
+counts aren't broken out yet.)
 
 ### 10. AXFR — serve secondaries like any other authority
 
@@ -255,9 +255,9 @@ $ zonegit --repo ./.zonegit approve api-failover --into main
 Approved "api-failover": fast-forward to a31b07d on main.
 ```
 
-The verb names exist purely to make ServiceNow / change-management
-conversations feel native. Underneath it's `branch + checkout`,
-`diff a..b`, and `checkout main; merge`.
+The verbs are thin aliases — underneath it's `branch + checkout`,
+`diff a..b`, and `checkout main; merge` — but the change-management
+vocabulary reads better in a review workflow.
 
 ## What's coming next
 
