@@ -517,6 +517,78 @@ func TestResolverIXFR(t *testing.T) {
 	})
 }
 
+// captureHook records every (qtype, rcode) the resolver observes.
+type captureHook struct {
+	mu   sync.Mutex
+	seen []obsRecord
+}
+
+type obsRecord struct {
+	qtype string
+	rcode int
+}
+
+func (c *captureHook) Observe(qtype string, rcode int) {
+	c.mu.Lock()
+	c.seen = append(c.seen, obsRecord{qtype, rcode})
+	c.mu.Unlock()
+}
+
+func (c *captureHook) records() []obsRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]obsRecord(nil), c.seen...)
+}
+
+// TestResolverTransferResponseAndMetrics pins two transfer-path bugs: a
+// streamed AXFR/IXFR must not be followed by a spurious empty single-message
+// reply, and the metrics hook must record the transfer's real rcode (not a
+// blanket NOERROR from an untouched reply struct).
+func TestResolverTransferResponseAndMetrics(t *testing.T) {
+	t.Run("successful AXFR: one NOERROR observation, no trailing empty reply", func(t *testing.T) {
+		hook := &captureHook{}
+		res := newResolver(t, seedRepo(t), resolve.Config{MetricsHook: hook})
+		w := &fakeRW{}
+		req := new(dns.Msg)
+		req.SetAxfr(testZone)
+		res.Handle(w, req)
+
+		w.mu.Lock()
+		for i, m := range w.msgs {
+			if len(m.Answer) == 0 {
+				t.Errorf("written message %d has no answers — looks like a spurious trailing reply after the transfer", i)
+			}
+		}
+		w.mu.Unlock()
+
+		recs := hook.records()
+		if len(recs) != 1 {
+			t.Fatalf("hook observed %d queries, want exactly 1: %v", len(recs), recs)
+		}
+		if recs[0].qtype != "AXFR" || recs[0].rcode != dns.RcodeSuccess {
+			t.Errorf("observed %+v, want {AXFR NOERROR}", recs[0])
+		}
+	})
+
+	t.Run("failed AXFR records SERVFAIL, not NOERROR", func(t *testing.T) {
+		hook := &captureHook{}
+		// A router pointing at a missing branch makes resolveHead fail.
+		res := newResolver(t, seedRepo(t), resolve.Config{Router: fixedRouter{branch: "ghost"}, MetricsHook: hook})
+		w := &fakeRW{}
+		req := new(dns.Msg)
+		req.SetAxfr(testZone)
+		res.Handle(w, req)
+
+		recs := hook.records()
+		if len(recs) != 1 {
+			t.Fatalf("hook observed %d queries, want exactly 1: %v", len(recs), recs)
+		}
+		if recs[0].rcode != dns.RcodeServerFailure {
+			t.Errorf("observed rcode %s, want SERVFAIL", dns.RcodeToString[recs[0].rcode])
+		}
+	})
+}
+
 func TestResolverMetricsHook(t *testing.T) {
 	m := resolve.NewMetrics()
 	res := newResolver(t, seedRepo(t), resolve.Config{MetricsHook: m})
