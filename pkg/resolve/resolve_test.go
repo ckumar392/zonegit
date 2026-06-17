@@ -241,6 +241,33 @@ func TestResolverEmptyQuestion(t *testing.T) {
 	}
 }
 
+// TestResolverNODATAForUnprobedType pins NODATA-vs-NXDOMAIN classification:
+// a name that exists with *any* record type — even one outside the small
+// set the resolver used to probe — must return NOERROR/NODATA, not NXDOMAIN.
+func TestResolverNODATAForUnprobedType(t *testing.T) {
+	r := seedRepo(t)
+	// HINFO is a real record type that was absent from the old hardcoded
+	// probe list, so before the fix this name looked nonexistent.
+	if err := r.Set(bg(), []dns.RR{mustRR(t, `weird.foo.com. 300 IN HINFO "cpu" "os"`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Commit(bg(), object.Identity{Name: "t", Email: "t@t"}, "add hinfo"); err != nil {
+		t.Fatal(err)
+	}
+	res := newResolver(t, r, resolve.Config{})
+
+	m := ask(t, res, "weird.foo.com.", dns.TypeA)
+	if m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR (NODATA): the name exists with a HINFO record", dns.RcodeToString[m.Rcode])
+	}
+	if len(m.Answer) != 0 {
+		t.Errorf("NODATA must have no answers, got %v", m.Answer)
+	}
+	if len(m.Ns) == 0 {
+		t.Error("NODATA should carry the apex SOA in authority")
+	}
+}
+
 func TestResolverDNSSEC(t *testing.T) {
 	r := seedRepo(t)
 	// Stage an RRSIG covering api A. The resolver only looks it up by
@@ -486,6 +513,78 @@ func TestResolverIXFR(t *testing.T) {
 		res.Handle(w, req)
 		if len(w.xfrRRs()) < 3 {
 			t.Errorf("unknown-serial IXFR should fall back to a full AXFR")
+		}
+	})
+}
+
+// captureHook records every (qtype, rcode) the resolver observes.
+type captureHook struct {
+	mu   sync.Mutex
+	seen []obsRecord
+}
+
+type obsRecord struct {
+	qtype string
+	rcode int
+}
+
+func (c *captureHook) Observe(qtype string, rcode int) {
+	c.mu.Lock()
+	c.seen = append(c.seen, obsRecord{qtype, rcode})
+	c.mu.Unlock()
+}
+
+func (c *captureHook) records() []obsRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]obsRecord(nil), c.seen...)
+}
+
+// TestResolverTransferResponseAndMetrics pins two transfer-path bugs: a
+// streamed AXFR/IXFR must not be followed by a spurious empty single-message
+// reply, and the metrics hook must record the transfer's real rcode (not a
+// blanket NOERROR from an untouched reply struct).
+func TestResolverTransferResponseAndMetrics(t *testing.T) {
+	t.Run("successful AXFR: one NOERROR observation, no trailing empty reply", func(t *testing.T) {
+		hook := &captureHook{}
+		res := newResolver(t, seedRepo(t), resolve.Config{MetricsHook: hook})
+		w := &fakeRW{}
+		req := new(dns.Msg)
+		req.SetAxfr(testZone)
+		res.Handle(w, req)
+
+		w.mu.Lock()
+		for i, m := range w.msgs {
+			if len(m.Answer) == 0 {
+				t.Errorf("written message %d has no answers — looks like a spurious trailing reply after the transfer", i)
+			}
+		}
+		w.mu.Unlock()
+
+		recs := hook.records()
+		if len(recs) != 1 {
+			t.Fatalf("hook observed %d queries, want exactly 1: %v", len(recs), recs)
+		}
+		if recs[0].qtype != "AXFR" || recs[0].rcode != dns.RcodeSuccess {
+			t.Errorf("observed %+v, want {AXFR NOERROR}", recs[0])
+		}
+	})
+
+	t.Run("failed AXFR records SERVFAIL, not NOERROR", func(t *testing.T) {
+		hook := &captureHook{}
+		// A router pointing at a missing branch makes resolveHead fail.
+		res := newResolver(t, seedRepo(t), resolve.Config{Router: fixedRouter{branch: "ghost"}, MetricsHook: hook})
+		w := &fakeRW{}
+		req := new(dns.Msg)
+		req.SetAxfr(testZone)
+		res.Handle(w, req)
+
+		recs := hook.records()
+		if len(recs) != 1 {
+			t.Fatalf("hook observed %d queries, want exactly 1: %v", len(recs), recs)
+		}
+		if recs[0].rcode != dns.RcodeServerFailure {
+			t.Errorf("observed rcode %s, want SERVFAIL", dns.RcodeToString[recs[0].rcode])
 		}
 	})
 }

@@ -73,9 +73,29 @@ type PollingSnapshotter struct {
 	// only by the watcher goroutine, so no lock is needed.
 	lastHashes map[string]store.Hash
 
+	// graceClose is how long a swapped-out handle is kept open before it is
+	// closed. An in-flight query (or a zone transfer, up to 30s) may still
+	// hold the pointer a previous Snapshot() returned; closing it immediately
+	// on swap would read from a closed store. Retired handles live in pending
+	// and are swept on later ticks. Must exceed the 30s transfer context in
+	// axfr.go/ixfr.go. (Reference-counted handles would be tighter; this is
+	// the simple, safe version.) Mutated only by the watcher goroutine.
+	graceClose time.Duration
+	pending    []pendingClose
+
 	stop chan struct{}
 	wg   sync.WaitGroup
 }
+
+// pendingClose is a handle retired by a swap, awaiting its grace period.
+type pendingClose struct {
+	r  *repo.Repo
+	at time.Time
+}
+
+// defaultCloseGrace must comfortably exceed the longest context a query can
+// hold a snapshot handle — the 30s AXFR/IXFR transfer context.
+const defaultCloseGrace = 45 * time.Second
 
 // SetWatchedRefs replaces the list of refs whose hashes invalidate the
 // cached snapshot. Used when a new zone is registered at runtime so its
@@ -111,6 +131,7 @@ func NewPollingSnapshotter(path string, refsToWatch []string, pollInterval time.
 		refs:         append([]string(nil), refsToWatch...),
 		pollInterval: pollInterval,
 		lastHashes:   make(map[string]store.Hash),
+		graceClose:   defaultCloseGrace,
 		stop:         make(chan struct{}),
 	}
 	ps.cur.Store(r)
@@ -134,6 +155,10 @@ func (p *PollingSnapshotter) Snapshot() (*repo.Repo, error) {
 func (p *PollingSnapshotter) Close() error {
 	close(p.stop)
 	p.wg.Wait()
+	for _, pc := range p.pending {
+		_ = pc.r.Close()
+	}
+	p.pending = nil
 	if r := p.cur.Swap(nil); r != nil {
 		return r.Close()
 	}
@@ -167,6 +192,7 @@ func (p *PollingSnapshotter) tick() {
 	fresh, err := repo.Open(repo.Options{Path: p.path, ReadOnly: true})
 	if err != nil {
 		// Writer mid-commit or FS hiccup — keep the existing handle.
+		p.sweepPending(time.Now())
 		return
 	}
 	ctx := context.Background()
@@ -185,13 +211,31 @@ func (p *PollingSnapshotter) tick() {
 	}
 	if !changed {
 		_ = fresh.Close()
+		p.sweepPending(time.Now())
 		return
 	}
 	p.lastHashes = freshHashes
-	old := p.cur.Swap(fresh)
-	if old != nil {
-		_ = old.Close()
+	if old := p.cur.Swap(fresh); old != nil {
+		// Retire, don't close: an in-flight query may still hold `old` from
+		// an earlier Snapshot(). It is closed once its grace period elapses.
+		p.pending = append(p.pending, pendingClose{r: old, at: time.Now()})
 	}
+	p.sweepPending(time.Now())
+}
+
+// sweepPending closes any retired handle whose grace period has elapsed.
+// Called on every tick (including no-change ticks) so retired handles still
+// get closed on a quiet repo.
+func (p *PollingSnapshotter) sweepPending(now time.Time) {
+	kept := p.pending[:0]
+	for _, pc := range p.pending {
+		if now.Sub(pc.at) >= p.graceClose {
+			_ = pc.r.Close()
+		} else {
+			kept = append(kept, pc)
+		}
+	}
+	p.pending = kept
 }
 
 func (p *PollingSnapshotter) captureHashes(r *repo.Repo) {
