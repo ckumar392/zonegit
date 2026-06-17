@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -500,27 +501,13 @@ func sortedKeys(m map[stagingKey]stagingValue) []stagingKey {
 	for k := range m {
 		out = append(out, k)
 	}
-	sortKeys(out)
-	return out
-}
-
-func sortKeys(ks []stagingKey) {
-	for i := 1; i < len(ks); i++ {
-		for j := i; j > 0; j-- {
-			if lessKey(ks[j], ks[j-1]) {
-				ks[j], ks[j-1] = ks[j-1], ks[j]
-			} else {
-				break
-			}
+	slices.SortFunc(out, func(a, b stagingKey) int {
+		if a.fqdn != b.fqdn {
+			return strings.Compare(a.fqdn, b.fqdn)
 		}
-	}
-}
-
-func lessKey(a, b stagingKey) bool {
-	if a.fqdn != b.fqdn {
-		return a.fqdn < b.fqdn
-	}
-	return a.rrtype < b.rrtype
+		return strings.Compare(a.rrtype, b.rrtype)
+	})
+	return out
 }
 
 // maybeBumpSOA auto-stages an SOA with serial+1 when the staging area has
