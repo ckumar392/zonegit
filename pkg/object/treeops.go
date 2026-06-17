@@ -22,6 +22,24 @@ func LoadTree(ctx context.Context, s store.Storage, h store.Hash) (Tree, error) 
 	return DecodeTree(obj.Payload)
 }
 
+// TreeOf returns the tree hash referenced by the commit at h, or ZeroHash
+// if h is zero or the commit can't be loaded/decoded. Callers that must
+// distinguish "no commit" from a load error should load the commit directly.
+func TreeOf(ctx context.Context, s store.Storage, h store.Hash) store.Hash {
+	if h.IsZero() {
+		return store.ZeroHash
+	}
+	obj, err := s.GetObject(ctx, h)
+	if err != nil {
+		return store.ZeroHash
+	}
+	c, err := DecodeCommit(obj.Payload)
+	if err != nil {
+		return store.ZeroHash
+	}
+	return c.Tree
+}
+
 // PutTree encodes t and writes it to s. Returns the hash.
 func PutTree(ctx context.Context, s store.Storage, t Tree) (store.Hash, error) {
 	for _, e := range t.Entries {
