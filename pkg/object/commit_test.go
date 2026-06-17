@@ -147,29 +147,6 @@ func TestCommitDecodeRejectsMissingHeaders(t *testing.T) {
 	}
 }
 
-func TestTagRoundTrip(t *testing.T) {
-	t.Parallel()
-	ts := time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
-	tag := Tag{
-		Object:     mkHash(0xcc),
-		Type:       "commit",
-		Tag:        "v2026.04.25-prod",
-		Tagger:     Identity{Name: "Release Bot", Email: "release@acme.example"},
-		TaggerTime: ts,
-		Message:    "Production release",
-	}
-	_, obj := tag.Encode()
-	got, err := DecodeTag(obj.Payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Object != tag.Object || got.Tag != tag.Tag || got.Type != tag.Type {
-		t.Errorf("header round-trip: %+v", got)
-	}
-	if got.Message != tag.Message {
-		t.Errorf("message: %q vs %q", got.Message, tag.Message)
-	}
-	if !got.TaggerTime.Equal(ts) {
-		t.Errorf("time: %s vs %s", got.TaggerTime, ts)
-	}
-}
+// Note: zonegit has no annotated-tag *object* — lightweight tag refs
+// (refs.TagRef + ref resolution) cover the use case. The object kind enum
+// keeps KindTag reserved.

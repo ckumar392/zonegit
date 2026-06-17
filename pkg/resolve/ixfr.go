@@ -32,7 +32,10 @@ import (
 //
 // RFC 1995 §4 says falling back to AXFR shape is correct behaviour for
 // any of these.
-func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) {
+//
+// It returns the response code recorded for metrics: NOERROR for a streamed
+// delta or AXFR fallback, SERVFAIL if neither could be produced.
+func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -40,49 +43,45 @@ func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	if err != nil {
 		log.Printf("ixfr: head: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 
 	latestSOAset, err := rp.Lookup(ctx, head, "@", "SOA")
 	if err != nil || len(latestSOAset.RRs) != 1 {
 		log.Printf("ixfr: no apex SOA at HEAD: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 	latestSOA, _ := latestSOAset.RRs[0].(*dns.SOA)
 	if latestSOA == nil {
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 
 	clientSerial, ok := clientIXFRSerial(req)
 	if !ok {
 		// No client SOA in Authority section — fall back to AXFR.
-		r.serveAXFR(w, req, rp)
-		return
+		return r.serveAXFR(w, req, rp)
 	}
 
 	if clientSerial == latestSOA.Serial {
 		// Already current. RFC 1995 §2: respond with just the current SOA.
 		emitTransfer(w, req, []dns.RR{latestSOA})
-		return
+		return dns.RcodeSuccess
 	}
 
 	// Find the historical commit whose apex SOA has the client's serial.
 	histCommit, histSOASet, err := findCommitBySOASerial(ctx, rp, head, clientSerial)
 	if err != nil {
 		log.Printf("ixfr: serial %d not found in history: %v — falling back to AXFR", clientSerial, err)
-		r.serveAXFR(w, req, rp)
-		return
+		return r.serveAXFR(w, req, rp)
 	}
 	if len(histSOASet.RRs) != 1 {
-		r.serveAXFR(w, req, rp)
-		return
+		return r.serveAXFR(w, req, rp)
 	}
 	histSOA, _ := histSOASet.RRs[0].(*dns.SOA)
 	if histSOA == nil {
-		r.serveAXFR(w, req, rp)
-		return
+		return r.serveAXFR(w, req, rp)
 	}
 
 	// Compute the diff between the historical tree and HEAD's tree.
@@ -91,8 +90,7 @@ func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	changes, err := history.Diff(ctx, rp.Storage(), histTree, headTree)
 	if err != nil {
 		log.Printf("ixfr: diff: %v — falling back to AXFR", err)
-		r.serveAXFR(w, req, rp)
-		return
+		return r.serveAXFR(w, req, rp)
 	}
 
 	var removed, added []dns.RR
@@ -130,6 +128,7 @@ func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	rrs = append(rrs, added...)
 	rrs = append(rrs, latestSOA)
 	emitTransfer(w, req, rrs)
+	return dns.RcodeSuccess
 }
 
 // findCommitBySOASerial searches the full commit DAG reachable from
