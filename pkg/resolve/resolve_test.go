@@ -241,6 +241,33 @@ func TestResolverEmptyQuestion(t *testing.T) {
 	}
 }
 
+// TestResolverNODATAForUnprobedType pins NODATA-vs-NXDOMAIN classification:
+// a name that exists with *any* record type — even one outside the small
+// set the resolver used to probe — must return NOERROR/NODATA, not NXDOMAIN.
+func TestResolverNODATAForUnprobedType(t *testing.T) {
+	r := seedRepo(t)
+	// HINFO is a real record type that was absent from the old hardcoded
+	// probe list, so before the fix this name looked nonexistent.
+	if err := r.Set(bg(), []dns.RR{mustRR(t, `weird.foo.com. 300 IN HINFO "cpu" "os"`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Commit(bg(), object.Identity{Name: "t", Email: "t@t"}, "add hinfo"); err != nil {
+		t.Fatal(err)
+	}
+	res := newResolver(t, r, resolve.Config{})
+
+	m := ask(t, res, "weird.foo.com.", dns.TypeA)
+	if m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR (NODATA): the name exists with a HINFO record", dns.RcodeToString[m.Rcode])
+	}
+	if len(m.Answer) != 0 {
+		t.Errorf("NODATA must have no answers, got %v", m.Answer)
+	}
+	if len(m.Ns) == 0 {
+		t.Error("NODATA should carry the apex SOA in authority")
+	}
+}
+
 func TestResolverDNSSEC(t *testing.T) {
 	r := seedRepo(t)
 	// Stage an RRSIG covering api A. The resolver only looks it up by

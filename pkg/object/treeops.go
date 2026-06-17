@@ -84,6 +84,31 @@ func WalkTree(ctx context.Context, s store.Storage, root store.Hash, path []stri
 	return e.Hash, nil
 }
 
+// NodeExists reports whether the tree contains a node at path — i.e. the
+// owner name has at least one RRset or a descendant subtree (an empty
+// non-terminal). It is how the resolver tells NODATA (the name exists, the
+// queried type does not) apart from NXDOMAIN (the name does not exist).
+//
+// An empty path is the zone apex, which exists whenever root is non-zero.
+func NodeExists(ctx context.Context, s store.Storage, root store.Hash, path []string) (bool, error) {
+	if root.IsZero() {
+		return false, nil
+	}
+	cur := root
+	for _, label := range path {
+		t, err := LoadTree(ctx, s, cur)
+		if err != nil {
+			return false, err
+		}
+		e, ok := t.Get(EntrySubtree, label)
+		if !ok {
+			return false, nil
+		}
+		cur = e.Hash
+	}
+	return true, nil
+}
+
 // WalkAllLeaves visits every leaf (RRset) reachable from root in
 // depth-first, sorted order. The callback receives the labels path from
 // the zone apex down to (but excluding) the leaf, plus the leaf's name
