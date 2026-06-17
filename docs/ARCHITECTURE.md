@@ -4,8 +4,9 @@
 > the code is laid out**, **which package depends on which**, and **what
 > each layer is allowed and forbidden to do**.
 >
-> The goal: keep the design replaceable. v0 uses Badger; v4 swaps in
-> Postgres without touching anything above the storage seam.
+> The goal: keep the design replaceable. Today's backend is Badger; another
+> backend can be added behind the storage seam without touching anything
+> above it.
 
 ---
 
@@ -43,9 +44,8 @@
                 ┌─────────▼──────────┐
                 │ pkg/store          │
                 │ Storage interface  │
-                │ + Badger adapter   │
-                │ + Postgres (v4)    │
-                │ + Memory (testing) │
+                │ + Badger (on disk) │
+                │ + memstore (tests) │
                 └────────────────────┘
 ```
 
@@ -118,7 +118,7 @@ between Badger and Postgres. No `if pgBackend { ... }`. Ever.
 
 ### `pkg/store`
 - Exactly the interface above.
-- Implementations: `badger/`, `memory/` (for tests). Postgres in v4.
+- Implementations: `badger/` (on disk) and `memstore/` (for tests).
 - No knowledge of what objects mean. It moves bytes.
 
 ### `pkg/object`
@@ -175,9 +175,10 @@ between Badger and Postgres. No `if pgBackend { ... }`. Ever.
 - No business logic in cmd/.
 
 ### `cmd/zonegitd`
-- Long-running server: gRPC for control plane, UDP/TCP DNS for resolution.
-- Reads from `pkg/resolve`. Watches refs for branch promotions and
-  invalidates caches. v0 has no gRPC yet — just DNS.
+- Long-running server: answers DNS over UDP/TCP, including AXFR and IXFR.
+- Reads through `pkg/resolve`. A background snapshotter watches the served
+  refs and swaps in a fresh read-only handle when a branch tip moves. There
+  is no gRPC control plane.
 
 ### `plugin/coredns` (v2+)
 - Thin shim that wraps `pkg/resolve` as a CoreDNS plugin.
@@ -249,15 +250,14 @@ commit's tree, this is O(N) memory reads. Fast.
 
 ## 8. Observability
 
-- Structured logging via `log/slog` (Go 1.21+ stdlib). No logrus.
-- Metrics via `prometheus/client_golang` exposed on a sidecar port.
-- Key metrics from day 1:
-  - `zonegit_object_reads_total{kind=...}`
-  - `zonegit_object_writes_total{kind=...}`
-  - `zonegit_ref_cas_attempts_total{result=ok|conflict}`
-  - `zonegit_resolve_latency_seconds` (histogram)
-  - `zonegit_repo_open_seconds`
-- Tracing via OpenTelemetry, optional, behind a flag.
+- Logging uses the stdlib `log` package (global logger), not `slog`.
+- Metrics are optional and hand-rolled (no `prometheus/client_golang`
+  dependency): `zonegitd --metrics-listen :9353` serves a Prometheus-format
+  `/metrics` endpoint from `pkg/resolve/metrics.go`. Two series today:
+  - `zonegit_dns_queries_total{qtype,rcode}` (counter)
+  - `zonegit_repo_active_branch{branch}` (info gauge)
+- Per-object / per-ref counters, a resolve-latency histogram, and tracing
+  are not implemented.
 
 ---
 
@@ -265,14 +265,14 @@ commit's tree, this is O(N) memory reads. Fast.
 
 - **Unit tests** per package, no network/disk except `pkg/store/badger`.
 - A shared **conformance suite** in `pkg/store/storetest` that any
-  `Storage` implementation must pass. Run against `memory` AND `badger` in
-  CI — Postgres adapter will plug into the same suite later.
-- **Property tests** (`testing/quick` or `gopter`) for invariants:
-  - "Encode then decode is identity"
-  - "Hash is deterministic"
-  - "RR list permutation does not change blob hash"
-- **End-to-end test** (`tests/e2e/`) that spawns `zonegitd`, runs the CLI,
-  fires `miekg/dns` queries, asserts answers.
+  `Storage` implementation must pass. Run against `memstore` AND `badger`
+  in CI; a future backend plugs into the same suite.
+- **Invariant tests** (table-driven) for the object model: encode/decode
+  round-trips, deterministic hashing, and canonical tree sorting (see the
+  `TestInvariant_*` tests in `pkg/object`).
+- **End-to-end**: `scripts/demo.sh` (`make demo`) builds both binaries,
+  imports a zone, serves it, mutates a record, and checks the result over
+  `dig`. A dedicated Go e2e harness (`tests/e2e/`) is not yet written.
 
 ---
 
@@ -349,7 +349,8 @@ protocol, same zone transfer (AXFR and IXFR).
   If `pkg/repo` needs to do something with bytes, it goes through
   `pkg/store`. No exceptions.
 - **No global state.** No package-level singletons, no `init()` magic.
-  Every dependency is injected. (Yes, that means no `log.Println` either.)
+  Every dependency is injected — logging via the stdlib global `log` is the
+  one pragmatic exception.
 - **No reflection-based serialization for object payloads.** Canonical
   form is hand-written and unit-tested. Reflection-based encoding
   invariably breaks canonicality on Go upgrades.
