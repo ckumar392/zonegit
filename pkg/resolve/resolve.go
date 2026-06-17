@@ -242,17 +242,17 @@ func (r *Resolver) resolveHead(ctx context.Context, rp *repo.Repo, q dns.Questio
 	return h, nil
 }
 
-// nameExists probes a small set of common types to classify NXDOMAIN vs
-// NODATA. A more thorough check would scan the tree at this label; this
-// approximation is good enough for the demo and covers the RR-types we
-// realistically serve.
+// nameExists reports whether rel names an existing node in the zone — a
+// name with some RRset, or an empty non-terminal with descendants. It is
+// what separates NODATA from NXDOMAIN: a name that exists but lacks the
+// queried type gets NODATA; a name with no node at all gets NXDOMAIN.
 func (r *Resolver) nameExists(ctx context.Context, rp *repo.Repo, head store.Hash, rel string) bool {
-	for _, t := range []string{"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "PTR", "SOA", "CAA", "TLSA", "SSHFP", "DS"} {
-		if _, err := rp.Lookup(ctx, head, rel, t); err == nil {
-			return true
-		}
+	exists, err := rp.NameExists(ctx, head, rel)
+	if err != nil {
+		log.Printf("resolve: nameExists %s: %v", rel, err)
+		return false
 	}
-	return false
+	return exists
 }
 
 func (r *Resolver) attachSOA(ctx context.Context, rp *repo.Repo, head store.Hash, resp *dns.Msg) {
