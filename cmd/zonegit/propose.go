@@ -103,11 +103,7 @@ aborts and the proposal stays open for further edits.`,
 			case res.FastForward:
 				fmt.Printf("Approved %q: fast-forward to %s on %s.\n", proposal, res.Commit.Short(), into)
 			case len(res.Conflicts) > 0:
-				fmt.Fprintln(cmd.OutOrStderr(), "conflicts (proposal remains open):")
-				for _, c := range res.Conflicts {
-					fmt.Fprintf(cmd.OutOrStderr(), "  %s\n", c)
-				}
-				return fmt.Errorf("%d conflict(s)", len(res.Conflicts))
+				return printMergeConflicts(cmd.OutOrStderr(), "conflicts (proposal remains open):", res)
 			default:
 				fmt.Printf("Approved %q: merge commit %s on %s.\n", proposal, res.Commit.Short(), into)
 			}
@@ -145,16 +141,7 @@ func newReviewCmd() *cobra.Command {
 			}
 			fmt.Printf("proposal %q vs %s — %d change(s):\n", proposal, into, len(changes))
 			for _, c := range changes {
-				sym := "?"
-				switch c.Op.String() {
-				case "added":
-					sym = "+"
-				case "removed":
-					sym = "-"
-				case "modified":
-					sym = "~"
-				}
-				fmt.Printf("  %s %s %s\n", sym, strings.TrimSuffix(c.FQDN(), "."), c.RRType)
+				fmt.Printf("  %s %s %s\n", diffSymbol(c), strings.TrimSuffix(c.FQDN(), "."), c.RRType)
 			}
 			return nil
 		},

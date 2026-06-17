@@ -29,11 +29,7 @@ func newMergeCmd() *cobra.Command {
 			case res.FastForward:
 				fmt.Printf("Fast-forward to %s.\n", res.Commit.Short())
 			case len(res.Conflicts) > 0:
-				fmt.Fprintln(cmd.OutOrStderr(), "merge conflicts (no commit produced):")
-				for _, c := range res.Conflicts {
-					fmt.Fprintf(cmd.OutOrStderr(), "  %s\n", c)
-				}
-				return fmt.Errorf("%d conflict(s)", len(res.Conflicts))
+				return printMergeConflicts(cmd.OutOrStderr(), "merge conflicts (no commit produced):", res)
 			default:
 				fmt.Printf("Merge made by 3-way; new commit %s.\n", res.Commit.Short())
 			}
