@@ -26,8 +26,6 @@
 package replicate
 
 import (
-	"encoding/hex"
-
 	"github.com/ckumar392/zonegit/pkg/store"
 )
 
@@ -68,14 +66,6 @@ type WalkRequest struct {
 // object is content-addressable on its own.
 type WalkResponse struct {
 	Missing []string `json:"missing"` // hex
-}
-
-func hashesToHex(hs []store.Hash) []string {
-	out := make([]string, len(hs))
-	for i, h := range hs {
-		out[i] = hex.EncodeToString(h[:])
-	}
-	return out
 }
 
 func hexesToHashes(in []string) ([]store.Hash, error) {
