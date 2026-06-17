@@ -442,6 +442,17 @@ func (r *Repo) Lookup(ctx context.Context, commit store.Hash, fqdn, rrtype strin
 	return zone.DecodeRRset(bobj.Payload)
 }
 
+// NameExists reports whether fqdn (relative to the active zone; "" or "@"
+// for the apex) has any RRset or descendant at the given commit. The
+// resolver uses it to answer NODATA rather than NXDOMAIN for a name that
+// exists but lacks the queried type. A zero commit means "no data".
+func (r *Repo) NameExists(ctx context.Context, commit store.Hash, fqdn string) (bool, error) {
+	if commit.IsZero() {
+		return false, nil
+	}
+	return object.NodeExists(ctx, r.storage, object.TreeOf(ctx, r.storage, commit), splitFQDN(normFQDN(fqdn)))
+}
+
 // --- helpers ---
 
 // stripZoneSuffix turns "api.foo.com." into "api" given zone "foo.com.".
