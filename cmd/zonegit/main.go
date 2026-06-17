@@ -112,29 +112,16 @@ func openRepo() (*repo.Repo, error) {
 			_ = r.Close()
 			return nil, fmt.Errorf("--zone %q is not registered; use `zonegit zone add %s` first", flagZone, flagZone)
 		}
-		// Pick the current branch in the target zone if HEAD already names one,
-		// otherwise fall back to "main".
+		// Pick the branch to land HEAD on: prefer "main" if the zone has it,
+		// otherwise the first branch. A zone with no branches yet falls back
+		// to the default (an orphan HEAD).
 		branch := repo.DefaultBranch
-		branches, _ := r.Refs().ListBranches(ctx, flagZone)
-		if len(branches) > 0 {
-			// Prefer "main" if present, else the first listed branch.
+		if branches, _ := r.Refs().ListBranches(ctx, flagZone); len(branches) > 0 {
+			branch = branches[0]
 			for _, b := range branches {
 				if b == repo.DefaultBranch {
-					branch = b
+					branch = repo.DefaultBranch
 					break
-				}
-			}
-			if branch == repo.DefaultBranch {
-				// confirm "main" actually exists; otherwise pick first
-				found := false
-				for _, b := range branches {
-					if b == repo.DefaultBranch {
-						found = true
-						break
-					}
-				}
-				if !found {
-					branch = branches[0]
 				}
 			}
 		}
@@ -269,7 +256,7 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[%s %s] %s\n", currentBranch(r), h.Short(), msg)
+			printCommitLine(r, h, msg)
 			return nil
 		},
 	}
@@ -299,7 +286,7 @@ func newDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("[%s %s] %s\n", currentBranch(r), h.Short(), msg)
+			printCommitLine(r, h, msg)
 			return nil
 		},
 	}
@@ -363,16 +350,7 @@ func newDiffCmd() *cobra.Command {
 				return nil
 			}
 			for _, c := range changes {
-				sym := "?"
-				switch c.Op.String() {
-				case "added":
-					sym = "+"
-				case "removed":
-					sym = "-"
-				case "modified":
-					sym = "~"
-				}
-				fmt.Printf("%s %s %s\n", sym, c.FQDN(), c.RRType)
+				fmt.Printf("%s %s %s\n", diffSymbol(c), c.FQDN(), c.RRType)
 			}
 			return nil
 		},
