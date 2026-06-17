@@ -393,7 +393,7 @@ func (r *Repo) Diff(ctx context.Context, fromRefish, toRefish string) ([]history
 	if err != nil {
 		return nil, err
 	}
-	return history.Diff(ctx, r.storage, treeOf(ctx, r.storage, a), treeOf(ctx, r.storage, b))
+	return history.Diff(ctx, r.storage, object.TreeOf(ctx, r.storage, a), object.TreeOf(ctx, r.storage, b))
 }
 
 // Blame returns the commit that introduced the current value of (fqdn, rrtype)
@@ -575,22 +575,4 @@ func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	}
 	r.staging[stagingKey{fqdn: "", rrtype: "SOA"}] = stagingValue{blob: h}
 	return nil
-}
-
-// treeOf returns the tree hash referenced by a commit, or ZeroHash on
-// error (callers must have already validated commit existence via
-// Resolve).
-func treeOf(ctx context.Context, s store.Storage, commit store.Hash) store.Hash {
-	if commit.IsZero() {
-		return store.ZeroHash
-	}
-	obj, err := s.GetObject(ctx, commit)
-	if err != nil {
-		return store.ZeroHash
-	}
-	c, err := object.DecodeCommit(obj.Payload)
-	if err != nil {
-		return store.ZeroHash
-	}
-	return c.Tree
 }
