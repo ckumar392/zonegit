@@ -208,31 +208,6 @@ func SignRRset(rrs []dns.RR, zone string, key Keypair, isKSK bool, inception, ex
 	return sig, nil
 }
 
-// VerifyRRset is a convenience wrapper around (*dns.RRSIG).Verify for
-// callers (mainly tests) that want to confirm an RRSIG validates.
-func VerifyRRset(sig *dns.RRSIG, key Keypair, rrs []dns.RR) error {
-	zone := canonZone(sig.SignerName)
-	keyFlag := uint16(256)
-	if sig.KeyTag != (&dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: zone, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: sig.OrigTtl},
-		Flags:     keyFlag,
-		Protocol:  3,
-		Algorithm: Algorithm,
-		PublicKey: base64.StdEncoding.EncodeToString(key.Public),
-	}).KeyTag() {
-		// Try KSK flags.
-		keyFlag = 257
-	}
-	dnskey := &dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: zone, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: sig.OrigTtl},
-		Flags:     keyFlag,
-		Protocol:  3,
-		Algorithm: Algorithm,
-		PublicKey: base64.StdEncoding.EncodeToString(key.Public),
-	}
-	return sig.Verify(dnskey, rrs)
-}
-
 // canonZone ensures the trailing dot and lowercases. Mirrors the
 // canonZone helpers elsewhere in the codebase to keep ref paths and key
 // filenames consistent.
