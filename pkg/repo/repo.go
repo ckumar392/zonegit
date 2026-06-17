@@ -149,7 +149,7 @@ func (r *Repo) Refs() *refs.DB { return r.refs }
 // subsequent zone; behaviour is equivalent except Init also sets HEAD
 // if it isn't already set.
 func (r *Repo) Init(ctx context.Context, zoneName string) error {
-	zoneName = canonZone(zoneName)
+	zoneName = refs.CanonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -171,7 +171,7 @@ func (r *Repo) Init(ctx context.Context, zoneName string) error {
 func (r *Repo) AddZone(ctx context.Context, zoneName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.refs.RegisterZone(ctx, canonZone(zoneName))
+	return r.refs.RegisterZone(ctx, refs.CanonZone(zoneName))
 }
 
 // Zones returns all registered zones in the repo, sorted.
@@ -187,7 +187,7 @@ func (r *Repo) ActiveZone() string { return r.activeZone }
 // active zone. The zone must already be registered; branch may or may
 // not exist (orphan branches are allowed).
 func (r *Repo) SwitchZone(ctx context.Context, zoneName, branch string) error {
-	zoneName = canonZone(zoneName)
+	zoneName = refs.CanonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ok, err := r.refs.IsZoneRegistered(ctx, zoneName)
@@ -443,17 +443,6 @@ func (r *Repo) Lookup(ctx context.Context, commit store.Hash, fqdn, rrtype strin
 }
 
 // --- helpers ---
-
-func canonZone(z string) string {
-	z = strings.ToLower(z)
-	if z == "" {
-		return ""
-	}
-	if !strings.HasSuffix(z, ".") {
-		z += "."
-	}
-	return z
-}
 
 // stripZoneSuffix turns "api.foo.com." into "api" given zone "foo.com.".
 // Returns "" for the apex.
