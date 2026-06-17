@@ -117,20 +117,15 @@ func walkLeavesAt(ctx context.Context, s store.Storage, path []string, h store.H
 func UpdateTree(ctx context.Context, s store.Storage, root store.Hash, path []string, rrtype string, leafHash store.Hash) (store.Hash, error) {
 	// Load the chain of trees from root to the deepest existing path element.
 	chain := make([]Tree, 0, len(path)+1)
-	{
-		var cur store.Hash
-		// If root is zero, start with an empty tree.
-		if root.IsZero() {
-			chain = append(chain, Tree{})
-		} else {
-			t, err := LoadTree(ctx, s, root)
-			if err != nil {
-				return store.Hash{}, err
-			}
-			chain = append(chain, t)
-			cur = root
-			_ = cur
+	if root.IsZero() {
+		// Start from an empty root tree.
+		chain = append(chain, Tree{})
+	} else {
+		t, err := LoadTree(ctx, s, root)
+		if err != nil {
+			return store.Hash{}, err
 		}
+		chain = append(chain, t)
 	}
 	// Descend, creating empty trees along the way for missing labels.
 	for _, label := range path {
