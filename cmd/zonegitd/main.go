@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -39,18 +38,6 @@ import (
 	"github.com/ckumar392/zonegit/pkg/route"
 	"github.com/ckumar392/zonegit/pkg/store"
 )
-
-// canonZone lower-cases and ensures a trailing dot.
-func canonZone(z string) string {
-	z = strings.ToLower(z)
-	if z == "" {
-		return ""
-	}
-	if !strings.HasSuffix(z, ".") {
-		z += "."
-	}
-	return z
-}
 
 var (
 	version = "dev"
@@ -201,7 +188,7 @@ func main() {
 	// the snapshotter's watched-ref list. Called once at startup, then
 	// periodically so zones added at runtime (`zonegit zone add ...`)
 	// and config edits (SIGHUP) are picked up without restarting.
-	zoneFilter := canonZone(*zoneFlag) // "" → all zones
+	zoneFilter := refs.CanonZone(*zoneFlag) // "" → all zones
 	reconcileMu := &sync.Mutex{}
 	// registered tracks both presence AND the rule used to register —
 	// so a SIGHUP-driven config change for a zone re-registers it with
