@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -148,7 +149,7 @@ func (r *Repo) Refs() *refs.DB { return r.refs }
 // subsequent zone; behaviour is equivalent except Init also sets HEAD
 // if it isn't already set.
 func (r *Repo) Init(ctx context.Context, zoneName string) error {
-	zoneName = canonZone(zoneName)
+	zoneName = refs.CanonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -170,7 +171,7 @@ func (r *Repo) Init(ctx context.Context, zoneName string) error {
 func (r *Repo) AddZone(ctx context.Context, zoneName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.refs.RegisterZone(ctx, canonZone(zoneName))
+	return r.refs.RegisterZone(ctx, refs.CanonZone(zoneName))
 }
 
 // Zones returns all registered zones in the repo, sorted.
@@ -186,7 +187,7 @@ func (r *Repo) ActiveZone() string { return r.activeZone }
 // active zone. The zone must already be registered; branch may or may
 // not exist (orphan branches are allowed).
 func (r *Repo) SwitchZone(ctx context.Context, zoneName, branch string) error {
-	zoneName = canonZone(zoneName)
+	zoneName = refs.CanonZone(zoneName)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ok, err := r.refs.IsZoneRegistered(ctx, zoneName)
@@ -393,7 +394,7 @@ func (r *Repo) Diff(ctx context.Context, fromRefish, toRefish string) ([]history
 	if err != nil {
 		return nil, err
 	}
-	return history.Diff(ctx, r.storage, treeOf(ctx, r.storage, a), treeOf(ctx, r.storage, b))
+	return history.Diff(ctx, r.storage, object.TreeOf(ctx, r.storage, a), object.TreeOf(ctx, r.storage, b))
 }
 
 // Blame returns the commit that introduced the current value of (fqdn, rrtype)
@@ -443,17 +444,6 @@ func (r *Repo) Lookup(ctx context.Context, commit store.Hash, fqdn, rrtype strin
 
 // --- helpers ---
 
-func canonZone(z string) string {
-	z = strings.ToLower(z)
-	if z == "" {
-		return ""
-	}
-	if !strings.HasSuffix(z, ".") {
-		z += "."
-	}
-	return z
-}
-
 // stripZoneSuffix turns "api.foo.com." into "api" given zone "foo.com.".
 // Returns "" for the apex.
 func stripZoneSuffix(owner, zoneName string) string {
@@ -500,27 +490,13 @@ func sortedKeys(m map[stagingKey]stagingValue) []stagingKey {
 	for k := range m {
 		out = append(out, k)
 	}
-	sortKeys(out)
-	return out
-}
-
-func sortKeys(ks []stagingKey) {
-	for i := 1; i < len(ks); i++ {
-		for j := i; j > 0; j-- {
-			if lessKey(ks[j], ks[j-1]) {
-				ks[j], ks[j-1] = ks[j-1], ks[j]
-			} else {
-				break
-			}
+	slices.SortFunc(out, func(a, b stagingKey) int {
+		if a.fqdn != b.fqdn {
+			return strings.Compare(a.fqdn, b.fqdn)
 		}
-	}
-}
-
-func lessKey(a, b stagingKey) bool {
-	if a.fqdn != b.fqdn {
-		return a.fqdn < b.fqdn
-	}
-	return a.rrtype < b.rrtype
+		return strings.Compare(a.rrtype, b.rrtype)
+	})
+	return out
 }
 
 // maybeBumpSOA auto-stages an SOA with serial+1 when the staging area has
@@ -575,22 +551,4 @@ func (r *Repo) maybeBumpSOA(ctx context.Context, parentTree store.Hash) error {
 	}
 	r.staging[stagingKey{fqdn: "", rrtype: "SOA"}] = stagingValue{blob: h}
 	return nil
-}
-
-// treeOf returns the tree hash referenced by a commit, or ZeroHash on
-// error (callers must have already validated commit existence via
-// Resolve).
-func treeOf(ctx context.Context, s store.Storage, commit store.Hash) store.Hash {
-	if commit.IsZero() {
-		return store.ZeroHash
-	}
-	obj, err := s.GetObject(ctx, commit)
-	if err != nil {
-		return store.ZeroHash
-	}
-	c, err := object.DecodeCommit(obj.Payload)
-	if err != nil {
-		return store.ZeroHash
-	}
-	return c.Tree
 }

@@ -55,7 +55,7 @@ func New(s store.Storage) *DB { return &DB{s: s} }
 
 // RegisterZone records the existence of a zone in this repo. Idempotent.
 func (db *DB) RegisterZone(ctx context.Context, zone string) error {
-	zone = canonZone(zone)
+	zone = CanonZone(zone)
 	if zone == "" {
 		return fmt.Errorf("RegisterZone: empty name")
 	}
@@ -81,7 +81,7 @@ func (db *DB) RegisterZone(ctx context.Context, zone string) error {
 // UnregisterZone removes a zone marker. Refuses if any branches or tags
 // still exist under that zone unless force is true.
 func (db *DB) UnregisterZone(ctx context.Context, zone string, force bool) error {
-	zone = canonZone(zone)
+	zone = CanonZone(zone)
 	if !force {
 		bs, err := db.ListBranches(ctx, zone)
 		if err != nil {
@@ -110,7 +110,7 @@ func (db *DB) ListZones(ctx context.Context) ([]string, error) {
 
 // IsZoneRegistered reports whether zone has been registered.
 func (db *DB) IsZoneRegistered(ctx context.Context, zone string) (bool, error) {
-	_, ok, err := db.s.GetRef(ctx, ZoneMarkerPrefix+canonZone(zone))
+	_, ok, err := db.s.GetRef(ctx, ZoneMarkerPrefix+CanonZone(zone))
 	if err != nil {
 		return false, err
 	}
@@ -151,7 +151,7 @@ func (db *DB) ReadHEAD(ctx context.Context) (zone, branch string, commit store.H
 
 // SetHEAD points HEAD at refs/heads/<zone>/<branch>. No length limit.
 func (db *DB) SetHEAD(ctx context.Context, zone, branch string) error {
-	zone = canonZone(zone)
+	zone = CanonZone(zone)
 	target := BranchPrefix + zone + "/" + branch
 	newH, err := writeSymref(ctx, db.s, target)
 	if err != nil {
@@ -200,18 +200,12 @@ func readSymref(ctx context.Context, s store.Storage, h store.Hash) (string, err
 
 // BranchRef builds the full ref path for (zone, branch).
 func BranchRef(zone, branch string) string {
-	return BranchPrefix + canonZone(zone) + "/" + branch
+	return BranchPrefix + CanonZone(zone) + "/" + branch
 }
 
 // TagRef builds the full ref path for (zone, tag).
 func TagRef(zone, tag string) string {
-	return TagPrefix + canonZone(zone) + "/" + tag
-}
-
-// ParseBranchRef returns (zone, branch, true) if ref is a
-// refs/heads/<zone>/<branch> path, or ("","",false) otherwise.
-func ParseBranchRef(ref string) (zone, branch string, ok bool) {
-	return parseBranchTarget(ref)
+	return TagPrefix + CanonZone(zone) + "/" + tag
 }
 
 func parseBranchTarget(target string) (zone, branch string, ok bool) {
@@ -262,7 +256,7 @@ func (db *DB) GetBranch(ctx context.Context, zone, name string) (store.Hash, err
 
 // ListBranches returns all branch names in zone (without prefix), sorted.
 func (db *DB) ListBranches(ctx context.Context, zone string) ([]string, error) {
-	prefix := BranchPrefix + canonZone(zone) + "/"
+	prefix := BranchPrefix + CanonZone(zone) + "/"
 	entries, err := db.s.ListRefs(ctx, prefix)
 	if err != nil {
 		return nil, err
@@ -297,7 +291,7 @@ func (db *DB) GetTag(ctx context.Context, zone, name string) (store.Hash, error)
 
 // ListTags returns all tag names in zone (without prefix), sorted.
 func (db *DB) ListTags(ctx context.Context, zone string) ([]string, error) {
-	prefix := TagPrefix + canonZone(zone) + "/"
+	prefix := TagPrefix + CanonZone(zone) + "/"
 	entries, err := db.s.ListRefs(ctx, prefix)
 	if err != nil {
 		return nil, err
@@ -361,7 +355,7 @@ func (db *DB) MigrateLegacyV03(ctx context.Context) (bool, string, error) {
 	if err != nil || !legacy {
 		return false, "", err
 	}
-	zoneName = canonZone(zoneName)
+	zoneName = CanonZone(zoneName)
 	if zoneName == "" {
 		return false, "", fmt.Errorf("legacy zone marker present but empty")
 	}
@@ -503,7 +497,7 @@ func (db *DB) Resolve(ctx context.Context, refish string) (store.Hash, error) {
 // override.
 func (db *DB) ResolveInZone(ctx context.Context, zone, refish string) (store.Hash, error) {
 	base, ancestor := splitAncestor(refish)
-	h, err := db.resolveBase(ctx, base, canonZone(zone))
+	h, err := db.resolveBase(ctx, base, CanonZone(zone))
 	if err != nil {
 		return store.ZeroHash, fmt.Errorf("resolve %q in %s: %w", refish, zone, err)
 	}
@@ -614,8 +608,8 @@ func splitAncestor(s string) (string, int) {
 
 // --- low-level encoding helpers ---
 
-// canonZone normalises a zone name to lowercase with trailing dot.
-func canonZone(z string) string {
+// CanonZone normalises a zone name to lowercase with trailing dot.
+func CanonZone(z string) string {
 	z = strings.ToLower(z)
 	if z == "" {
 		return ""

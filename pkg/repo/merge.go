@@ -105,9 +105,9 @@ func (r *Repo) Merge(ctx context.Context, theirsBranch string, author object.Ide
 	}
 
 	mergedTree, conflicts, err := merge.MergeTrees(ctx, r.storage,
-		treeOf(ctx, r.storage, base),
-		treeOf(ctx, r.storage, ours),
-		treeOf(ctx, r.storage, theirs),
+		object.TreeOf(ctx, r.storage, base),
+		object.TreeOf(ctx, r.storage, ours),
+		object.TreeOf(ctx, r.storage, theirs),
 	)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("merge: tree merge: %w", err)
