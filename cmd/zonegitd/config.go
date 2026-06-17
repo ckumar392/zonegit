@@ -5,8 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ckumar392/zonegit/pkg/refs"
 	"gopkg.in/yaml.v3"
+
+	"github.com/ckumar392/zonegit/pkg/refs"
 )
 
 // daemonConfig is the YAML schema for --config. It lets each zone get its
