@@ -63,7 +63,7 @@ func (s *Server) handleRefs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp.Branches = append(resp.Branches, Branch{
-				Zone: z, Name: n, Hash: hashesToHex([]store.Hash{h})[0],
+				Zone: z, Name: n, Hash: h.String(),
 			})
 		}
 	}
@@ -128,7 +128,7 @@ func (s *Server) handleWalk(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]string, 0, len(missing))
 	for h := range missing {
-		out = append(out, hashesToHex([]store.Hash{h})[0])
+		out = append(out, h.String())
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(WalkResponse{Missing: out})

@@ -17,7 +17,7 @@ import (
 // Series exposed:
 //
 //	zonegit_dns_queries_total{qtype="A",rcode="NOERROR"} N
-//	zonegit_repo_head_branch  (info gauge, value is always 1, label "branch")
+//	zonegit_repo_active_branch{branch="..."} 1  (info gauge)
 //
 // Cardinality is bounded by (qtypes seen) × (rcodes seen) and stays small
 // even on adversarial input because the qtype/rcode strings are drawn

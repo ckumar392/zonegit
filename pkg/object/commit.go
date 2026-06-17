@@ -35,8 +35,8 @@ func (id Identity) String() string {
 //	parent <hex>           (zero or more)
 //	author Name <email> <unix> <±HHMM>
 //	committer Name <email> <unix> <±HHMM>
-//	[selector <expr>]      (optional, reserved for v2 canary)
-//	[signature ed25519 <base64>] (optional, populated in v3)
+//	[selector <expr>]      (optional, reserved; not currently written)
+//	[signature ed25519 <base64>] (optional; set by `zonegit sign-commit`)
 //
 //	<message>
 //
@@ -49,8 +49,8 @@ type Commit struct {
 	Committer  Identity
 	AuthorTime time.Time
 	CommitTime time.Time
-	Selector   string // optional, for canary commits (v2+)
-	Signature  string // optional, populated in v3
+	Selector   string // optional; reserved, not currently written
+	Signature  string // optional; set by commit signing (pkg/sign)
 	Message    string
 }
 

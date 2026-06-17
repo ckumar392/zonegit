@@ -1,9 +1,10 @@
 # Selector grammar (v2 spec)
 
-> Status: **DRAFT, locked before v2 implementation begins.**
-> Once v2 ships, the surface defined here is forward-compatible: we may
-> add operators, fields, and namespaces, but we will not change the
-> meaning of existing ones without a major version bump.
+> Status: **DESIGN DRAFT — not implemented.** The shipping daemon supports
+> only a single percentage-bucket canary rule (`--canary branch:pct`, see
+> `pkg/route`). The full grammar below is a forward-looking design sketch;
+> none of it is wired up yet. It's kept here so the eventual surface is
+> forward-compatible, not as a description of current behaviour.
 
 ## 1. Why this document exists
 
