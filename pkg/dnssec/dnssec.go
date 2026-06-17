@@ -1,20 +1,18 @@
 // Package dnssec provides DNSSEC keypair management and RRSIG generation
-// for zonegit zones. v0.6 ships Ed25519 (RFC 8080, algorithm 15) — the
-// smallest, fastest, simplest DNSSEC algorithm. Adding RSA or ECDSA in
-// the future is a matter of plumbing additional Algorithm cases through
-// the same surfaces (generation, key file marshalling, RRSIG.Sign).
+// for zonegit zones. It ships Ed25519 (RFC 8080, algorithm 15) — the
+// smallest, fastest, simplest DNSSEC algorithm. Adding RSA or ECDSA later
+// is a matter of plumbing additional Algorithm cases through the same
+// surfaces (generation, key file marshalling, RRSIG.Sign).
 //
-// Key material lives in a "keys directory" — by default
-// <repo>/keys/ — as four files per zone:
+// Key material lives in a keys directory as four files per zone. The zone
+// name keeps its trailing dot, so for foo.com. the files are:
 //
-//	<zone>.ksk.key   Ed25519 private key, base64    (mode 0600)
-//	<zone>.ksk.pub   Ed25519 public  key, base64    (mode 0644)
-//	<zone>.zsk.key   Ed25519 private key, base64    (mode 0600)
-//	<zone>.zsk.pub   Ed25519 public  key, base64    (mode 0644)
+//	foo.com.ksk.priv   Ed25519 private key, base64    (mode 0600)
+//	foo.com.ksk.pub    Ed25519 public  key, base64    (mode 0644)
+//	foo.com.zsk.priv   Ed25519 private key, base64    (mode 0600)
+//	foo.com.zsk.pub    Ed25519 public  key, base64    (mode 0644)
 //
-// The on-disk format is the same as pkg/sign uses for commit-signing
-// keys, so a future operator can adopt the same KMS adapters
-// transparently when v0.7 adds remote-key support.
+// The on-disk format matches the commit-signing keys in pkg/sign.
 package dnssec
 
 import (
@@ -30,7 +28,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Algorithm 15 — Ed25519. The only algorithm v0.6 supports.
+// Algorithm 15 — Ed25519, the only algorithm currently supported.
 const Algorithm = dns.ED25519
 
 // Keypair holds one DNSSEC key (KSK or ZSK).
@@ -208,31 +206,6 @@ func SignRRset(rrs []dns.RR, zone string, key Keypair, isKSK bool, inception, ex
 		return nil, fmt.Errorf("RRSIG.Sign: %w", err)
 	}
 	return sig, nil
-}
-
-// VerifyRRset is a convenience wrapper around (*dns.RRSIG).Verify for
-// callers (mainly tests) that want to confirm an RRSIG validates.
-func VerifyRRset(sig *dns.RRSIG, key Keypair, rrs []dns.RR) error {
-	zone := canonZone(sig.SignerName)
-	keyFlag := uint16(256)
-	if sig.KeyTag != (&dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: zone, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: sig.OrigTtl},
-		Flags:     keyFlag,
-		Protocol:  3,
-		Algorithm: Algorithm,
-		PublicKey: base64.StdEncoding.EncodeToString(key.Public),
-	}).KeyTag() {
-		// Try KSK flags.
-		keyFlag = 257
-	}
-	dnskey := &dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: zone, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: sig.OrigTtl},
-		Flags:     keyFlag,
-		Protocol:  3,
-		Algorithm: Algorithm,
-		PublicKey: base64.StdEncoding.EncodeToString(key.Public),
-	}
-	return sig.Verify(dnskey, rrs)
 }
 
 // canonZone ensures the trailing dot and lowercases. Mirrors the

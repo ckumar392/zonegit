@@ -1,8 +1,9 @@
 // Package store defines the only persistence seam in zonegit.
 //
-// Every zonegit storage backend (in-memory, Badger, Postgres, ...) implements
-// the Storage interface. Nothing above this package knows or cares which
-// backend is in use. See docs/ARCHITECTURE.md section 2 for the design rationale.
+// Every zonegit storage backend implements the Storage interface — today
+// that's Badger (on disk) and an in-memory store (for tests). Nothing above
+// this package knows or cares which backend is in use. See
+// docs/ARCHITECTURE.md section 2 for the design rationale.
 package store
 
 import (

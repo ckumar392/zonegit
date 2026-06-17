@@ -22,6 +22,24 @@ func LoadTree(ctx context.Context, s store.Storage, h store.Hash) (Tree, error) 
 	return DecodeTree(obj.Payload)
 }
 
+// TreeOf returns the tree hash referenced by the commit at h, or ZeroHash
+// if h is zero or the commit can't be loaded/decoded. Callers that must
+// distinguish "no commit" from a load error should load the commit directly.
+func TreeOf(ctx context.Context, s store.Storage, h store.Hash) store.Hash {
+	if h.IsZero() {
+		return store.ZeroHash
+	}
+	obj, err := s.GetObject(ctx, h)
+	if err != nil {
+		return store.ZeroHash
+	}
+	c, err := DecodeCommit(obj.Payload)
+	if err != nil {
+		return store.ZeroHash
+	}
+	return c.Tree
+}
+
 // PutTree encodes t and writes it to s. Returns the hash.
 func PutTree(ctx context.Context, s store.Storage, t Tree) (store.Hash, error) {
 	for _, e := range t.Entries {
@@ -117,20 +135,15 @@ func walkLeavesAt(ctx context.Context, s store.Storage, path []string, h store.H
 func UpdateTree(ctx context.Context, s store.Storage, root store.Hash, path []string, rrtype string, leafHash store.Hash) (store.Hash, error) {
 	// Load the chain of trees from root to the deepest existing path element.
 	chain := make([]Tree, 0, len(path)+1)
-	{
-		var cur store.Hash
-		// If root is zero, start with an empty tree.
-		if root.IsZero() {
-			chain = append(chain, Tree{})
-		} else {
-			t, err := LoadTree(ctx, s, root)
-			if err != nil {
-				return store.Hash{}, err
-			}
-			chain = append(chain, t)
-			cur = root
-			_ = cur
+	if root.IsZero() {
+		// Start from an empty root tree.
+		chain = append(chain, Tree{})
+	} else {
+		t, err := LoadTree(ctx, s, root)
+		if err != nil {
+			return store.Hash{}, err
 		}
+		chain = append(chain, t)
 	}
 	// Descend, creating empty trees along the way for missing labels.
 	for _, label := range path {

@@ -86,8 +86,8 @@ func (r *Resolver) serveIXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	}
 
 	// Compute the diff between the historical tree and HEAD's tree.
-	histTree := treeOf(ctx, rp.Storage(), histCommit)
-	headTree := treeOf(ctx, rp.Storage(), head)
+	histTree := object.TreeOf(ctx, rp.Storage(), histCommit)
+	headTree := object.TreeOf(ctx, rp.Storage(), head)
 	changes, err := history.Diff(ctx, rp.Storage(), histTree, headTree)
 	if err != nil {
 		log.Printf("ixfr: diff: %v — falling back to AXFR", err)
@@ -199,23 +199,6 @@ func loadRRs(ctx context.Context, s store.Storage, blobHash store.Hash) ([]dns.R
 		return nil, err
 	}
 	return rs.RRs, nil
-}
-
-// treeOf returns the tree hash inside the commit at h (or ZeroHash on
-// error — callers should have already validated h points at a commit).
-func treeOf(ctx context.Context, s store.Storage, h store.Hash) store.Hash {
-	if h.IsZero() {
-		return store.ZeroHash
-	}
-	obj, err := s.GetObject(ctx, h)
-	if err != nil {
-		return store.ZeroHash
-	}
-	c, err := object.DecodeCommit(obj.Payload)
-	if err != nil {
-		return store.ZeroHash
-	}
-	return c.Tree
 }
 
 // emitTransfer sends rrs as a single Transfer.Out envelope. Used by both

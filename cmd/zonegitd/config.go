@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ckumar392/zonegit/pkg/refs"
 )
 
 // daemonConfig is the YAML schema for --config. It lets each zone get its
@@ -51,10 +53,10 @@ func loadDaemonConfig(path string) (*daemonConfig, error) {
 		c.DefaultBranch = "main"
 	}
 	// Canonicalise zone keys (lowercase, trailing dot) so lookups match
-	// the canonZone()-canonicalised forms the daemon uses everywhere.
+	// the refs.CanonZone-canonicalised forms the daemon uses everywhere.
 	canon := make(map[string]zoneRuleConfig, len(c.Zones))
 	for k, v := range c.Zones {
-		canon[canonZone(k)] = v
+		canon[refs.CanonZone(k)] = v
 	}
 	c.Zones = canon
 	return &c, nil
@@ -63,7 +65,7 @@ func loadDaemonConfig(path string) (*daemonConfig, error) {
 // ruleFor returns the effective per-zone settings, layering zone
 // overrides on top of the daemon-level defaults.
 func (c *daemonConfig) ruleFor(zone string) zoneRuleConfig {
-	zone = canonZone(zone)
+	zone = refs.CanonZone(zone)
 	r := zoneRuleConfig{
 		Branch: c.DefaultBranch,
 		At:     c.DefaultAt,

@@ -129,7 +129,7 @@ func (c *Client) Pull(ctx context.Context) error {
 func (c *Client) pullBranch(ctx context.Context, b Branch, primaryHash, localHash store.Hash) error {
 	known := []string{}
 	if !localHash.IsZero() {
-		known = []string{hashesToHex([]store.Hash{localHash})[0]}
+		known = []string{localHash.String()}
 	}
 	walk, err := c.walkMissing(ctx, []string{b.Hash}, known)
 	if err != nil {
