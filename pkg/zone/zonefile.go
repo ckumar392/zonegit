@@ -64,15 +64,3 @@ func ImportZonefile(r io.Reader, origin string) ([]RRset, error) {
 	})
 	return out, nil
 }
-
-// ExportZonefile writes RRsets as a textual zonefile.
-func ExportZonefile(w io.Writer, rrsets []RRset) error {
-	for _, rs := range rrsets {
-		for _, rr := range rs.RRs {
-			if _, err := fmt.Fprintln(w, rr.String()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}

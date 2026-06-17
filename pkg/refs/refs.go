@@ -208,12 +208,6 @@ func TagRef(zone, tag string) string {
 	return TagPrefix + CanonZone(zone) + "/" + tag
 }
 
-// ParseBranchRef returns (zone, branch, true) if ref is a
-// refs/heads/<zone>/<branch> path, or ("","",false) otherwise.
-func ParseBranchRef(ref string) (zone, branch string, ok bool) {
-	return parseBranchTarget(ref)
-}
-
 func parseBranchTarget(target string) (zone, branch string, ok bool) {
 	if !strings.HasPrefix(target, BranchPrefix) {
 		return "", "", false
