@@ -21,7 +21,10 @@ import (
 // secondaries pull the zone over standard TCP and stay in sync via their
 // own NOTIFY/refresh loop. Incremental transfer (IXFR) is handled
 // separately in serveIXFR.
-func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) {
+//
+// It returns the response code recorded for metrics: NOERROR once the
+// transfer is streamed, SERVFAIL if the zone could not be assembled.
+func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -29,14 +32,14 @@ func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	if err != nil {
 		log.Printf("axfr: head: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 
 	soa, err := rp.Lookup(ctx, head, "@", "SOA")
 	if err != nil {
 		log.Printf("axfr: no apex SOA: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 
 	// Collect all RRsets into a single envelope. The miekg/dns Transfer.Out
@@ -45,13 +48,13 @@ func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	if err != nil {
 		log.Printf("axfr: load commit: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 	commit, err := object.DecodeCommit(commitObj.Payload)
 	if err != nil {
 		log.Printf("axfr: decode commit: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 
 	var all []dns.RR
@@ -75,7 +78,7 @@ func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	if err != nil {
 		log.Printf("axfr: walk: %v", err)
 		_ = sendAXFRError(w, req)
-		return
+		return dns.RcodeServerFailure
 	}
 	all = append(all, soa.RRs...) // trailing SOA closes the transfer
 
@@ -88,6 +91,7 @@ func (r *Resolver) serveAXFR(w dns.ResponseWriter, req *dns.Msg, rp *repo.Repo) 
 	if err := tr.Out(w, req, ch); err != nil {
 		log.Printf("axfr: out: %v", err)
 	}
+	return dns.RcodeSuccess
 }
 
 func sendAXFRError(w dns.ResponseWriter, req *dns.Msg) error {

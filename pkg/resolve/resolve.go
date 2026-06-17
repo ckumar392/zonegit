@@ -94,10 +94,16 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 	resp.Authoritative = true
 	resp.RecursionAvailable = false
 
+	// transfer is set for AXFR/IXFR, which stream their own (multi-message)
+	// response and record their own metrics. The single-message reply below
+	// is skipped for them — otherwise we'd write a spurious empty NOERROR
+	// after the transfer and mis-record its rcode.
+	transfer := false
 	defer func() {
-		if r.cfg.MetricsHook != nil && len(req.Question) > 0 {
-			r.cfg.MetricsHook.Observe(dns.TypeToString[req.Question[0].Qtype], resp.Rcode)
+		if transfer {
+			return
 		}
+		r.observe(req, resp.Rcode)
 		_ = w.WriteMsg(resp)
 	}()
 
@@ -112,28 +118,28 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
 	rp, err := r.snap.Snapshot()
 	if err != nil {
 		log.Printf("resolve: snapshot: %v", err)
 		resp.Rcode = dns.RcodeServerFailure
 		return
 	}
-	// The resolver owns its own zone identity (set at construction); the
-	// Repo handle is shared across all zones served from this snapshotter.
 
-	// Zone-transfer queries stream their response and skip the leaf-walk
-	// path below.
+	// Zone-transfer queries stream their own response (including error
+	// replies) and skip the single-message leaf-walk path below.
 	switch q.Qtype {
 	case dns.TypeAXFR:
-		r.serveAXFR(w, req, rp)
+		transfer = true
+		r.observe(req, r.serveAXFR(w, req, rp))
 		return
 	case dns.TypeIXFR:
-		r.serveIXFR(w, req, rp)
+		transfer = true
+		r.observe(req, r.serveIXFR(w, req, rp))
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
 	head, err := r.resolveHead(ctx, rp, q, qname)
 	if err != nil {
@@ -188,6 +194,14 @@ func (r *Resolver) Handle(w dns.ResponseWriter, req *dns.Msg) {
 	default:
 		log.Printf("resolve: lookup %s %s: %v", rel, qtype, err)
 		resp.Rcode = dns.RcodeServerFailure
+	}
+}
+
+// observe records one handled query in the metrics hook (if configured),
+// keyed by the query type and the response code actually returned.
+func (r *Resolver) observe(req *dns.Msg, rcode int) {
+	if r.cfg.MetricsHook != nil && len(req.Question) > 0 {
+		r.cfg.MetricsHook.Observe(dns.TypeToString[req.Question[0].Qtype], rcode)
 	}
 }
 
