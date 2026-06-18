@@ -1,4 +1,4 @@
-package main
+package zonesign_test
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 	"github.com/ckumar392/zonegit/pkg/repo"
 	"github.com/ckumar392/zonegit/pkg/store"
 	"github.com/ckumar392/zonegit/pkg/zone"
+	"github.com/ckumar392/zonegit/pkg/zonesign"
 )
 
-// These tests pin the observable output of the DNSSEC signing engine
-// (stageDNSSECScaffold + autoSignTouched) so it can be lifted out of
-// package main into pkg/zonesign without changing behaviour. The
-// invariants asserted here hold regardless of where the code lives.
+// These tests pin the observable output of the DNSSEC signing engine so it
+// behaves identically to the in-cmd implementation it was lifted from. The
+// invariants asserted here are independent of the signing internals.
 
 const charZone = "foo.com."
 
@@ -106,8 +106,7 @@ func collectSignedZone(t *testing.T, r *repo.Repo) signedZone {
 }
 
 // fqdnFromPath reverses a tree path (apex-nearest label first) into an
-// owner FQDN. It mirrors ownerFQDN but lives in the test so the
-// assertions survive the engine moving packages.
+// owner FQDN, mirroring the engine's own owner reconstruction.
 func fqdnFromPath(zoneName string, path []string) string {
 	if len(path) == 0 {
 		return zoneName
@@ -140,8 +139,7 @@ func sortedOwners(z signedZone) []string {
 }
 
 // assertScaffoldInvariants checks the structural DNSSEC properties that
-// must hold no matter where the signing engine lives or whether real keys
-// were used.
+// must hold whether or not real keys were used.
 func assertScaffoldInvariants(t *testing.T, z signedZone, zoneName string) {
 	t.Helper()
 
@@ -226,12 +224,14 @@ func assertScaffoldInvariants(t *testing.T, z signedZone, zoneName string) {
 	}
 }
 
-func TestStageDNSSECScaffold_Characterization(t *testing.T) {
+func TestSignZone_Characterization(t *testing.T) {
+	opts := zonesign.Options{TTL: 300, ValidityDays: 30}
+
 	t.Run("dry-run", func(t *testing.T) {
 		r := seedCharZone(t)
 		ctx := context.Background()
-		if err := stageDNSSECScaffold(ctx, r, nil, 300, 30); err != nil {
-			t.Fatalf("stageDNSSECScaffold(dry-run): %v", err)
+		if err := zonesign.SignZone(ctx, r, nil, opts); err != nil {
+			t.Fatalf("SignZone(dry-run): %v", err)
 		}
 		if _, err := r.Commit(ctx, object.Identity{Name: "s", Email: "s@s"}, "dnssec"); err != nil {
 			t.Fatal(err)
@@ -246,8 +246,8 @@ func TestStageDNSSECScaffold_Characterization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := stageDNSSECScaffold(ctx, r, keys, 300, 30); err != nil {
-			t.Fatalf("stageDNSSECScaffold(real): %v", err)
+		if err := zonesign.SignZone(ctx, r, keys, opts); err != nil {
+			t.Fatalf("SignZone(real): %v", err)
 		}
 		if _, err := r.Commit(ctx, object.Identity{Name: "s", Email: "s@s"}, "dnssec"); err != nil {
 			t.Fatal(err)
@@ -295,30 +295,19 @@ func TestStageDNSSECScaffold_Characterization(t *testing.T) {
 	})
 }
 
-// TestAutoSignTouched_PreservesUntouchedSigs pins the subtle property that
+// TestAutoSign_PreservesUntouchedSigs pins the subtle property that
 // re-signing one type at an owner does not drop the RRSIGs covering that
 // owner's other types (they all share a single RRSIG RRset).
-func TestAutoSignTouched_PreservesUntouchedSigs(t *testing.T) {
+func TestAutoSign_PreservesUntouchedSigs(t *testing.T) {
 	ctx := context.Background()
-
-	// autoSignTouched and keysDir read the flagRepoPath global; point it at
-	// a temp dir holding real keys for the zone.
-	saved := flagRepoPath
-	flagRepoPath = t.TempDir()
-	defer func() { flagRepoPath = saved }()
-
 	keys, err := dnssec.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.WriteToDir(keysDir(), charZone); err != nil {
-		t.Fatal(err)
-	}
-
 	r := seedCharZone(t)
 
 	// Fully sign once so api carries RRSIGs for A, TXT and NSEC.
-	if err := stageDNSSECScaffold(ctx, r, keys, 300, 30); err != nil {
+	if err := zonesign.SignZone(ctx, r, keys, zonesign.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.Commit(ctx, object.Identity{Name: "s", Email: "s@s"}, "dnssec"); err != nil {
@@ -330,8 +319,8 @@ func TestAutoSignTouched_PreservesUntouchedSigs(t *testing.T) {
 	if err := r.Set(ctx, []dns.RR{newA}); err != nil {
 		t.Fatal(err)
 	}
-	if err := autoSignTouched(ctx, r, []dns.RR{newA}); err != nil {
-		t.Fatalf("autoSignTouched: %v", err)
+	if err := zonesign.AutoSign(ctx, r, keys, []dns.RR{newA}); err != nil {
+		t.Fatalf("AutoSign: %v", err)
 	}
 	if _, err := r.Commit(ctx, object.Identity{Name: "s", Email: "s@s"}, "auto-sign"); err != nil {
 		t.Fatal(err)
@@ -359,5 +348,27 @@ func TestAutoSignTouched_PreservesUntouchedSigs(t *testing.T) {
 		if err := sig.Verify(pubZSK, z["api.foo.com."]["A"]); err != nil {
 			t.Errorf("re-signed api A RRSIG.Verify(ZSK): %v", err)
 		}
+	}
+}
+
+// TestAutoSign_NilKeysIsNoop documents that AutoSign without keys stages
+// nothing and does not error (the `set --auto-sign` no-key path).
+func TestAutoSign_NilKeysIsNoop(t *testing.T) {
+	ctx := context.Background()
+	r := seedCharZone(t)
+	touched := []dns.RR{mustRR(t, "api.foo.com. 300 IN A 9.9.9.9")}
+	if err := r.Set(ctx, touched); err != nil {
+		t.Fatal(err)
+	}
+	if err := zonesign.AutoSign(ctx, r, nil, touched); err != nil {
+		t.Fatalf("AutoSign(nil keys): %v", err)
+	}
+	// Nothing extra staged means no RRSIG appears after commit.
+	if _, err := r.Commit(ctx, object.Identity{Name: "s", Email: "s@s"}, "set"); err != nil {
+		t.Fatal(err)
+	}
+	z := collectSignedZone(t, r)
+	if _, ok := z["api.foo.com."]["RRSIG"]; ok {
+		t.Error("AutoSign(nil keys) unexpectedly produced an RRSIG")
 	}
 }
